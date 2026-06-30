@@ -9,6 +9,7 @@ type Trigger = (ctx: TriggerCtx) => void;
 type Arm = () => void;
 type Pointer = (clientX: number, clientY: number) => void;
 type Debug = (info: string) => void;
+type Action = () => void;
 
 /**
  * Слушает pointer-события на элементе вью Excalidraw в capture-фазе (чтобы
@@ -35,12 +36,20 @@ export class PointerWatcher {
   private suppressContext = false;
   /** Перо в контакте с полотном (после pointerdown с buttons&1). */
   private penDown = false;
-  /** Парение: боковая кнопка зажата (для открытия меню по отпусканию). */
+  /** Парение: боковая кнопка зажата сейчас. */
   private penBtnActive = false;
   private penBtnStartX = 0;
   private penBtnStartY = 0;
-  /** Время последнего срабатывания penbutton (антидребезг). */
-  private lastPenButtonFire = 0;
+  /** Кнопку при парении сдвинули за порог — это не тап и не удержание. */
+  private penBtnMoved = false;
+  /** Меню инструментов уже открыто этим удержанием — отпускание ничего не делает. */
+  private penBtnHeldOpen = false;
+  /** Таймер удержания кнопки (→ меню инструментов). */
+  private holdTimer: number | null = null;
+  /** Таймер ожидания второго тапа (одиночный тап → меню вставки). */
+  private tapTimer: number | null = null;
+  /** Время предыдущего тапа кнопкой (для распознавания двойного). */
+  private lastBtnTap = 0;
 
   constructor(
     private el: HTMLElement,
@@ -49,6 +58,8 @@ export class PointerWatcher {
     private onArm: Arm,
     private onPointer: Pointer,
     private onDebug: Debug,
+    private onToolToggle: Action,
+    private onToolMenu: Trigger,
   ) {}
 
   attach(): void {
@@ -66,6 +77,8 @@ export class PointerWatcher {
     this.el.removeEventListener("pointercancel", this.cancel, true);
     this.el.removeEventListener("contextmenu", this.ctx, true);
     this.clearTimer();
+    this.clearHoldTimer();
+    this.clearTapTimer();
   }
 
   /** Перо или мышь (мышь — чтобы тестировать на ПК). Палец игнорируем. */
@@ -97,8 +110,10 @@ export class PointerWatcher {
     if (!this.onDrawSurface(e)) return; // не трогаем кнопки/панели Excalidraw
 
     if (s.trigger === "penbutton") {
-      // Меню открываем только при ПАРЕНИИ (см. move). Касание — обычное рисование
-      // Excalidraw; кнопку при касании только гасим в contextmenu (см. ctx).
+      // Жесты только при ПАРЕНИИ (см. move). Касание = обычное рисование Excalidraw;
+      // сбрасываем «парящее» состояние кнопки, кнопку при касании гасим в contextmenu.
+      this.penBtnActive = false;
+      this.clearHoldTimer();
       return;
     }
 
@@ -151,18 +166,29 @@ export class PointerWatcher {
     const s = this.getSettings();
 
     // penbutton: кнопка во время ПАРЕНИЯ (без касания) приходит как buttons&1.
-    // Нажать-отпустить кнопку, наведя перо над холстом → меню в точке нажатия.
+    // Одиночный тап → меню вставки; двойной тап → перо⇄ластик; удержание → меню инструментов.
     if (s.trigger === "penbutton" && e.pointerType === "pen" && !this.penDown) {
       const pressed = !!(e.buttons & 1);
       if (pressed && !this.penBtnActive) {
+        // нажали кнопку
         this.penBtnActive = true;
+        this.penBtnMoved = false;
+        this.penBtnHeldOpen = false;
         this.penBtnStartX = e.clientX;
         this.penBtnStartY = e.clientY;
+        this.startHoldTimer();
+      } else if (pressed && this.penBtnActive && !this.penBtnHeldOpen) {
+        // держим: если ушли за порог — это не тап и не удержание (отменяем меню инструментов)
+        const dist = Math.hypot(e.clientX - this.penBtnStartX, e.clientY - this.penBtnStartY);
+        if (dist > s.moveThresholdPx) {
+          this.penBtnMoved = true;
+          this.clearHoldTimer();
+        }
       } else if (this.penBtnActive && !pressed) {
+        // отпустили кнопку
         this.penBtnActive = false;
-        this.firePenButton(e, () =>
-          this.onTrigger({ clientX: this.penBtnStartX, clientY: this.penBtnStartY }),
-        );
+        this.clearHoldTimer();
+        if (!this.penBtnHeldOpen && !this.penBtnMoved) this.handleBtnTap(e);
       }
     }
 
@@ -189,6 +215,7 @@ export class PointerWatcher {
 
   private cancel = (): void => {
     this.clearTimer();
+    this.clearHoldTimer();
     this.penDown = false;
     this.penBtnActive = false;
     this.armed = false;
@@ -212,13 +239,55 @@ export class PointerWatcher {
     }
   };
 
-  /** Срабатывание режима penbutton с антидребезгом. */
-  private firePenButton(e: PointerEvent, action: () => void): void {
-    if (e.timeStamp - this.lastPenButtonFire < 400) return;
-    this.lastPenButtonFire = e.timeStamp;
+  /**
+   * Отпустили кнопку при парении без движения и без удержания: это тап.
+   * Второй такой тап в окне doubleTapMs → перо⇄ластик, иначе по тайм-ауту → меню вставки.
+   */
+  private handleBtnTap(e: PointerEvent): void {
+    const s = this.getSettings();
     e.preventDefault();
     e.stopPropagation();
-    action();
+    if (e.timeStamp - this.lastBtnTap < s.doubleTapMs) {
+      this.lastBtnTap = 0;
+      this.clearTapTimer();
+      this.onToolToggle();
+      return;
+    }
+    this.lastBtnTap = e.timeStamp;
+    this.clearTapTimer();
+    const x = this.penBtnStartX;
+    const y = this.penBtnStartY;
+    this.tapTimer = window.setTimeout(() => {
+      this.tapTimer = null;
+      this.onTrigger({ clientX: x, clientY: y });
+    }, s.doubleTapMs);
+  }
+
+  /** Кнопку держат на месте дольше longPressMs → меню инструментов у кончика пера. */
+  private startHoldTimer(): void {
+    this.clearHoldTimer();
+    const x = this.penBtnStartX;
+    const y = this.penBtnStartY;
+    this.holdTimer = window.setTimeout(() => {
+      this.holdTimer = null;
+      this.penBtnHeldOpen = true;
+      this.clearTapTimer();
+      this.onToolMenu({ clientX: x, clientY: y });
+    }, this.getSettings().longPressMs);
+  }
+
+  private clearHoldTimer(): void {
+    if (this.holdTimer != null) {
+      clearTimeout(this.holdTimer);
+      this.holdTimer = null;
+    }
+  }
+
+  private clearTapTimer(): void {
+    if (this.tapTimer != null) {
+      clearTimeout(this.tapTimer);
+      this.tapTimer = null;
+    }
   }
 
   private fire(e: PointerEvent): void {

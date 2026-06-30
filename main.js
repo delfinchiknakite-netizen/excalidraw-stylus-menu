@@ -42,13 +42,15 @@ var DEFAULT_SETTINGS = {
 
 // src/PointerWatcher.ts
 var PointerWatcher = class {
-  constructor(el, getSettings, onTrigger, onArm, onPointer, onDebug) {
+  constructor(el, getSettings, onTrigger, onArm, onPointer, onDebug, onToolToggle, onToolMenu) {
     this.el = el;
     this.getSettings = getSettings;
     this.onTrigger = onTrigger;
     this.onArm = onArm;
     this.onPointer = onPointer;
     this.onDebug = onDebug;
+    this.onToolToggle = onToolToggle;
+    this.onToolMenu = onToolMenu;
     this.longPressTimer = null;
     this.downX = 0;
     this.downY = 0;
@@ -60,12 +62,20 @@ var PointerWatcher = class {
     this.suppressContext = false;
     /** Перо в контакте с полотном (после pointerdown с buttons&1). */
     this.penDown = false;
-    /** Парение: боковая кнопка зажата (для открытия меню по отпусканию). */
+    /** Парение: боковая кнопка зажата сейчас. */
     this.penBtnActive = false;
     this.penBtnStartX = 0;
     this.penBtnStartY = 0;
-    /** Время последнего срабатывания penbutton (антидребезг). */
-    this.lastPenButtonFire = 0;
+    /** Кнопку при парении сдвинули за порог — это не тап и не удержание. */
+    this.penBtnMoved = false;
+    /** Меню инструментов уже открыто этим удержанием — отпускание ничего не делает. */
+    this.penBtnHeldOpen = false;
+    /** Таймер удержания кнопки (→ меню инструментов). */
+    this.holdTimer = null;
+    /** Таймер ожидания второго тапа (одиночный тап → меню вставки). */
+    this.tapTimer = null;
+    /** Время предыдущего тапа кнопкой (для распознавания двойного). */
+    this.lastBtnTap = 0;
     this.down = (e) => {
       const s = this.getSettings();
       if (s.debugOverlay) {
@@ -79,6 +89,8 @@ var PointerWatcher = class {
       this.onPointer(e.clientX, e.clientY);
       if (!this.onDrawSurface(e)) return;
       if (s.trigger === "penbutton") {
+        this.penBtnActive = false;
+        this.clearHoldTimer();
         return;
       }
       if (s.trigger === "tapempty") {
@@ -128,14 +140,21 @@ var PointerWatcher = class {
         const pressed = !!(e.buttons & 1);
         if (pressed && !this.penBtnActive) {
           this.penBtnActive = true;
+          this.penBtnMoved = false;
+          this.penBtnHeldOpen = false;
           this.penBtnStartX = e.clientX;
           this.penBtnStartY = e.clientY;
+          this.startHoldTimer();
+        } else if (pressed && this.penBtnActive && !this.penBtnHeldOpen) {
+          const dist = Math.hypot(e.clientX - this.penBtnStartX, e.clientY - this.penBtnStartY);
+          if (dist > s.moveThresholdPx) {
+            this.penBtnMoved = true;
+            this.clearHoldTimer();
+          }
         } else if (this.penBtnActive && !pressed) {
           this.penBtnActive = false;
-          this.firePenButton(
-            e,
-            () => this.onTrigger({ clientX: this.penBtnStartX, clientY: this.penBtnStartY })
-          );
+          this.clearHoldTimer();
+          if (!this.penBtnHeldOpen && !this.penBtnMoved) this.handleBtnTap(e);
         }
       }
       const thr = s.moveThresholdPx;
@@ -159,6 +178,7 @@ var PointerWatcher = class {
     };
     this.cancel = () => {
       this.clearTimer();
+      this.clearHoldTimer();
       this.penDown = false;
       this.penBtnActive = false;
       this.armed = false;
@@ -191,6 +211,8 @@ var PointerWatcher = class {
     this.el.removeEventListener("pointercancel", this.cancel, true);
     this.el.removeEventListener("contextmenu", this.ctx, true);
     this.clearTimer();
+    this.clearHoldTimer();
+    this.clearTapTimer();
   }
   /** Перо или мышь (мышь — чтобы тестировать на ПК). Палец игнорируем. */
   penLike(e) {
@@ -205,13 +227,52 @@ var PointerWatcher = class {
     const t = e.target;
     return !!t && t.tagName === "CANVAS";
   }
-  /** Срабатывание режима penbutton с антидребезгом. */
-  firePenButton(e, action) {
-    if (e.timeStamp - this.lastPenButtonFire < 400) return;
-    this.lastPenButtonFire = e.timeStamp;
+  /**
+   * Отпустили кнопку при парении без движения и без удержания: это тап.
+   * Второй такой тап в окне doubleTapMs → перо⇄ластик, иначе по тайм-ауту → меню вставки.
+   */
+  handleBtnTap(e) {
+    const s = this.getSettings();
     e.preventDefault();
     e.stopPropagation();
-    action();
+    if (e.timeStamp - this.lastBtnTap < s.doubleTapMs) {
+      this.lastBtnTap = 0;
+      this.clearTapTimer();
+      this.onToolToggle();
+      return;
+    }
+    this.lastBtnTap = e.timeStamp;
+    this.clearTapTimer();
+    const x = this.penBtnStartX;
+    const y = this.penBtnStartY;
+    this.tapTimer = window.setTimeout(() => {
+      this.tapTimer = null;
+      this.onTrigger({ clientX: x, clientY: y });
+    }, s.doubleTapMs);
+  }
+  /** Кнопку держат на месте дольше longPressMs → меню инструментов у кончика пера. */
+  startHoldTimer() {
+    this.clearHoldTimer();
+    const x = this.penBtnStartX;
+    const y = this.penBtnStartY;
+    this.holdTimer = window.setTimeout(() => {
+      this.holdTimer = null;
+      this.penBtnHeldOpen = true;
+      this.clearTapTimer();
+      this.onToolMenu({ clientX: x, clientY: y });
+    }, this.getSettings().longPressMs);
+  }
+  clearHoldTimer() {
+    if (this.holdTimer != null) {
+      clearTimeout(this.holdTimer);
+      this.holdTimer = null;
+    }
+  }
+  clearTapTimer() {
+    if (this.tapTimer != null) {
+      clearTimeout(this.tapTimer);
+      this.tapTimer = null;
+    }
   }
   fire(e) {
     var _a;
@@ -596,7 +657,9 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
         (x, y) => {
           this.lastPointer = { clientX: x, clientY: y };
         },
-        (info) => this.logLine(info)
+        (info) => this.logLine(info),
+        () => this.toggleEraser(),
+        (ctx) => this.openToolMenu(ctx)
       );
       watcher.attach();
       this.watchers.set(el, watcher);
@@ -745,6 +808,57 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     ];
     new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
   }
+  /* ---------- инструменты (жесты кнопкой при парении) ---------- */
+  /** Выбрать активный инструмент Excalidraw (надёжно, через API). */
+  setTool(type) {
+    const ea = getEA(this.app);
+    if (!ea) {
+      new import_obsidian3.Notice("Excalidraw \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u2014 \u0432\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u043F\u043B\u0430\u0433\u0438\u043D Excalidraw.");
+      return;
+    }
+    try {
+      ea.setView("active");
+    } catch (e) {
+    }
+    const api = getApi(this.app);
+    if (!(api == null ? void 0 : api.setActiveTool)) {
+      new import_obsidian3.Notice("\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0445\u043E\u043B\u0441\u0442 Excalidraw \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D.");
+      return;
+    }
+    try {
+      api.setActiveTool({ type });
+    } catch (err) {
+      console.error("[excalidraw-stylus-menu] setActiveTool failed", err);
+    }
+  }
+  /** Двойной тап кнопкой: тумблер перо ⇄ ластик. */
+  toggleEraser() {
+    var _a, _b, _c;
+    const api = getApi(this.app);
+    const cur = (_c = (_b = (_a = api == null ? void 0 : api.getAppState) == null ? void 0 : _a.call(api)) == null ? void 0 : _b.activeTool) == null ? void 0 : _c.type;
+    const next = cur === "eraser" ? "freedraw" : "eraser";
+    this.setTool(next);
+    new import_obsidian3.Notice(next === "eraser" ? "\u041B\u0430\u0441\u0442\u0438\u043A" : "\u041F\u0435\u0440\u043E");
+  }
+  /** Удержание кнопки: меню инструментов у кончика пера. «Рука» двигает холст вместо рисования. */
+  openToolMenu(ctx) {
+    const tools = [
+      ["\u270E  \u041F\u0435\u0440\u043E", "freedraw"],
+      ["\u232B  \u041B\u0430\u0441\u0442\u0438\u043A", "eraser"],
+      ["\u2922  \u0412\u044B\u0434\u0435\u043B\u0435\u043D\u0438\u0435", "selection"],
+      ["\u270B  \u0420\u0443\u043A\u0430 (\u0434\u0432\u0438\u0433\u0430\u0442\u044C \u0445\u043E\u043B\u0441\u0442)", "hand"],
+      ["\u25AD  \u041F\u0440\u044F\u043C\u043E\u0443\u0433\u043E\u043B\u044C\u043D\u0438\u043A", "rectangle"],
+      ["\u25EF  \u042D\u043B\u043B\u0438\u043F\u0441", "ellipse"],
+      ["\u2192  \u0421\u0442\u0440\u0435\u043B\u043A\u0430", "arrow"],
+      ["\uFF0F  \u041B\u0438\u043D\u0438\u044F", "line"],
+      ["T  \u0422\u0435\u043A\u0441\u0442", "text"]
+    ];
+    const items = tools.map(([label, type]) => ({
+      label,
+      onClick: () => this.setTool(type)
+    }));
+    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+  }
   /* ---------- диагностика стилуса ---------- */
   refreshDebugOverlay() {
     if (this.settings.debugOverlay) {
@@ -839,7 +953,7 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian3.Setting(containerEl).setName("\u0416\u0435\u0441\u0442-\u0442\u0440\u0438\u0433\u0433\u0435\u0440").setDesc("\u0427\u0435\u043C \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0442\u044C \u043C\u0435\u043D\u044E \u0432\u0441\u0442\u0430\u0432\u043A\u0438 \u043F\u0435\u0440\u043E\u043C.").addDropdown(
-      (d) => d.addOption("penbutton", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen \u043F\u0440\u0438 \u043F\u0430\u0440\u0435\u043D\u0438\u0438 \u2192 \u043C\u0435\u043D\u044E").addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435 (barrel)").setValue(this.plugin.settings.trigger).onChange(async (v) => {
+      (d) => d.addOption("penbutton", "\u041A\u043D\u043E\u043F\u043A\u0430 S Pen \u043F\u0440\u0438 \u043F\u0430\u0440\u0435\u043D\u0438\u0438 (\u0442\u0430\u043F\u2192\u043C\u0435\u043D\u044E, 2\xD7\u2192\u043F\u0435\u0440\u043E/\u043B\u0430\u0441\u0442\u0438\u043A, \u0443\u0434\u0435\u0440\u0436.\u2192\u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442\u044B)").addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435 (barrel)").setValue(this.plugin.settings.trigger).onChange(async (v) => {
         this.plugin.settings.trigger = v;
         await this.plugin.saveSettings();
       })

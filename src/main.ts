@@ -108,6 +108,8 @@ export default class StylusMenuPlugin extends Plugin {
           this.lastPointer = { clientX: x, clientY: y };
         },
         (info) => this.logLine(info),
+        () => this.toggleEraser(),
+        (ctx) => this.openToolMenu(ctx),
       );
       watcher.attach();
       this.watchers.set(el, watcher);
@@ -275,6 +277,61 @@ export default class StylusMenuPlugin extends Plugin {
     new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
   }
 
+  /* ---------- инструменты (жесты кнопкой при парении) ---------- */
+
+  /** Выбрать активный инструмент Excalidraw (надёжно, через API). */
+  private setTool(type: string): void {
+    const ea = getEA(this.app);
+    if (!ea) {
+      new Notice("Excalidraw не найден — включите плагин Excalidraw.");
+      return;
+    }
+    try {
+      ea.setView("active");
+    } catch {
+      /* ignore */
+    }
+    const api = getApi(this.app);
+    if (!api?.setActiveTool) {
+      new Notice("Активный холст Excalidraw не найден.");
+      return;
+    }
+    try {
+      api.setActiveTool({ type });
+    } catch (err) {
+      console.error("[excalidraw-stylus-menu] setActiveTool failed", err);
+    }
+  }
+
+  /** Двойной тап кнопкой: тумблер перо ⇄ ластик. */
+  private toggleEraser(): void {
+    const api = getApi(this.app);
+    const cur = api?.getAppState?.()?.activeTool?.type;
+    const next = cur === "eraser" ? "freedraw" : "eraser";
+    this.setTool(next);
+    new Notice(next === "eraser" ? "Ластик" : "Перо");
+  }
+
+  /** Удержание кнопки: меню инструментов у кончика пера. «Рука» двигает холст вместо рисования. */
+  private openToolMenu(ctx: TriggerCtx): void {
+    const tools: Array<[string, string]> = [
+      ["✎  Перо", "freedraw"],
+      ["⌫  Ластик", "eraser"],
+      ["⤢  Выделение", "selection"],
+      ["✋  Рука (двигать холст)", "hand"],
+      ["▭  Прямоугольник", "rectangle"],
+      ["◯  Эллипс", "ellipse"],
+      ["→  Стрелка", "arrow"],
+      ["／  Линия", "line"],
+      ["T  Текст", "text"],
+    ];
+    const items: MenuItem[] = tools.map(([label, type]) => ({
+      label,
+      onClick: () => this.setTool(type),
+    }));
+    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+  }
+
   /* ---------- диагностика стилуса ---------- */
 
   refreshDebugOverlay(): void {
@@ -393,7 +450,7 @@ class StylusMenuSettingTab extends PluginSettingTab {
       .setDesc("Чем открывать меню вставки пером.")
       .addDropdown((d) =>
         d
-          .addOption("penbutton", "Боковая кнопка S Pen при парении → меню")
+          .addOption("penbutton", "Кнопка S Pen при парении (тап→меню, 2×→перо/ластик, удерж.→инструменты)")
           .addOption("tapempty", "Касание пером по пустому месту")
           .addOption("longpress", "Долгое нажатие пером")
           .addOption("doubletap", "Двойное касание пером")
