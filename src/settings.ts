@@ -1,4 +1,4 @@
-export type TriggerGesture = "tapempty" | "barrel" | "longpress" | "doubletap";
+export type TriggerGesture = "penbutton" | "tapempty" | "barrel" | "longpress" | "doubletap";
 
 export interface StylusMenuSettings {
   /** Жест, открывающий меню вставки. */
@@ -24,7 +24,7 @@ export interface StylusMenuSettings {
 }
 
 export const DEFAULT_SETTINGS: StylusMenuSettings = {
-  trigger: "tapempty",
+  trigger: "penbutton",
   longPressMs: 450,
   doubleTapMs: 300,
   moveThresholdPx: 8,

@@ -27,7 +27,7 @@ var import_obsidian3 = require("obsidian");
 
 // src/settings.ts
 var DEFAULT_SETTINGS = {
-  trigger: "tapempty",
+  trigger: "penbutton",
   longPressMs: 450,
   doubleTapMs: 300,
   moveThresholdPx: 8,
@@ -58,14 +58,25 @@ var PointerWatcher = class {
     this.lastTapX = 0;
     this.lastTapY = 0;
     this.suppressContext = false;
+    /** Перо в контакте с полотном (после pointerdown с buttons&1). */
+    this.penDown = false;
+    /** Кнопка пера уже сработала в этом «нажатии» при парении — не дублировать. */
+    this.penButtonFired = false;
+    /** Время последнего срабатывания penbutton (антидребезг между путями). */
+    this.lastPenButtonFire = 0;
     this.down = (e) => {
       const s = this.getSettings();
       if (s.debugOverlay) {
         this.onDebug(`down  type=${e.pointerType}  buttons=${e.buttons}  button=${e.button}`);
       }
       if (!this.penLike(e)) return;
+      if (e.buttons & 1) this.penDown = true;
       this.onPointer(e.clientX, e.clientY);
       if (!this.onDrawSurface(e)) return;
+      if (s.trigger === "penbutton") {
+        if (e.buttons & 1) this.onArm();
+        return;
+      }
       if (s.trigger === "tapempty") {
         if (!(e.buttons & 1)) return;
         this.downX = e.clientX;
@@ -108,7 +119,16 @@ var PointerWatcher = class {
     };
     this.move = (e) => {
       if (this.penLike(e)) this.onPointer(e.clientX, e.clientY);
-      const thr = this.getSettings().moveThresholdPx;
+      const s = this.getSettings();
+      if (s.trigger === "penbutton" && e.pointerType === "pen") {
+        const pressed = !!(e.buttons & 1);
+        if (pressed && !this.penDown && !this.penButtonFired) {
+          this.penButtonFired = true;
+          this.firePenButton(e);
+        }
+        if (!pressed) this.penButtonFired = false;
+      }
+      const thr = s.moveThresholdPx;
       if (this.armed) {
         const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
         if (dist > thr) this.moved = true;
@@ -120,6 +140,7 @@ var PointerWatcher = class {
     };
     this.up = () => {
       this.clearTimer();
+      this.penDown = false;
       if (this.armed) {
         const wasTap = !this.moved;
         this.armed = false;
@@ -128,9 +149,17 @@ var PointerWatcher = class {
     };
     this.cancel = () => {
       this.clearTimer();
+      this.penDown = false;
       this.armed = false;
     };
     this.ctx = (e) => {
+      const s = this.getSettings();
+      if (s.trigger === "penbutton" && e.pointerType === "pen") {
+        e.preventDefault();
+        e.stopPropagation();
+        this.firePenButton(e);
+        return;
+      }
       if (this.suppressContext) {
         this.suppressContext = false;
         e.preventDefault();
@@ -165,6 +194,14 @@ var PointerWatcher = class {
   onDrawSurface(e) {
     const t = e.target;
     return !!t && t.tagName === "CANVAS";
+  }
+  /** Срабатывание режима penbutton с антидребезгом между путями (hover/contextmenu). */
+  firePenButton(e) {
+    if (e.timeStamp - this.lastPenButtonFire < 400) return;
+    this.lastPenButtonFire = e.timeStamp;
+    e.preventDefault();
+    e.stopPropagation();
+    this.onTrigger({ clientX: e.clientX, clientY: e.clientY });
   }
   fire(e) {
     var _a;
@@ -792,7 +829,7 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian3.Setting(containerEl).setName("\u0416\u0435\u0441\u0442-\u0442\u0440\u0438\u0433\u0433\u0435\u0440").setDesc("\u0427\u0435\u043C \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0442\u044C \u043C\u0435\u043D\u044E \u0432\u0441\u0442\u0430\u0432\u043A\u0438 \u043F\u0435\u0440\u043E\u043C.").addDropdown(
-      (d) => d.addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435").setValue(this.plugin.settings.trigger).onChange(async (v) => {
+      (d) => d.addOption("penbutton", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen (\u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u0438\u043B\u0438 \u043F\u0430\u0440\u0435\u043D\u0438\u0435)").addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435 (barrel)").setValue(this.plugin.settings.trigger).onChange(async (v) => {
         this.plugin.settings.trigger = v;
         await this.plugin.saveSettings();
       })

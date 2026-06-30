@@ -33,6 +33,12 @@ export class PointerWatcher {
   private lastTapX = 0;
   private lastTapY = 0;
   private suppressContext = false;
+  /** Перо в контакте с полотном (после pointerdown с buttons&1). */
+  private penDown = false;
+  /** Кнопка пера уже сработала в этом «нажатии» при парении — не дублировать. */
+  private penButtonFired = false;
+  /** Время последнего срабатывания penbutton (антидребезг между путями). */
+  private lastPenButtonFire = 0;
 
   constructor(
     private el: HTMLElement,
@@ -81,8 +87,17 @@ export class PointerWatcher {
       this.onDebug(`down  type=${e.pointerType}  buttons=${e.buttons}  button=${e.button}`);
     }
     if (!this.penLike(e)) return;
+    if (e.buttons & 1) this.penDown = true; // перо коснулось полотна
     this.onPointer(e.clientX, e.clientY); // запоминаем позицию пера (для команды)
     if (!this.onDrawSurface(e)) return; // не трогаем кнопки/панели Excalidraw
+
+    if (s.trigger === "penbutton") {
+      // Кнопка S Pen всплывает либо как contextmenu при касании (см. ctx),
+      // либо как buttons&1 при парении (см. move). Здесь — только снимок сцены
+      // на случай артефактной точки от карандаша при касании-с-кнопкой.
+      if (e.buttons & 1) this.onArm();
+      return; // не preventDefault — ждём contextmenu/парение
+    }
 
     if (s.trigger === "tapempty") {
       if (!(e.buttons & 1)) return; // только контакт пера/ЛКМ
@@ -130,7 +145,19 @@ export class PointerWatcher {
 
   private move = (e: PointerEvent): void => {
     if (this.penLike(e)) this.onPointer(e.clientX, e.clientY);
-    const thr = this.getSettings().moveThresholdPx;
+    const s = this.getSettings();
+
+    // penbutton: кнопка во время ПАРЕНИЯ (без касания) приходит как buttons&1.
+    if (s.trigger === "penbutton" && e.pointerType === "pen") {
+      const pressed = !!(e.buttons & 1);
+      if (pressed && !this.penDown && !this.penButtonFired) {
+        this.penButtonFired = true;
+        this.firePenButton(e);
+      }
+      if (!pressed) this.penButtonFired = false; // кнопку отпустили — готовы к следующей
+    }
+
+    const thr = s.moveThresholdPx;
     if (this.armed) {
       const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
       if (dist > thr) this.moved = true;
@@ -143,6 +170,7 @@ export class PointerWatcher {
 
   private up = (): void => {
     this.clearTimer();
+    this.penDown = false;
     if (this.armed) {
       const wasTap = !this.moved;
       this.armed = false;
@@ -152,10 +180,19 @@ export class PointerWatcher {
 
   private cancel = (): void => {
     this.clearTimer();
+    this.penDown = false;
     this.armed = false;
   };
 
   private ctx = (e: Event): void => {
+    // penbutton: кнопка S Pen в момент КАСАНИЯ приходит как contextmenu type=pen.
+    const s = this.getSettings();
+    if (s.trigger === "penbutton" && (e as PointerEvent).pointerType === "pen") {
+      e.preventDefault();
+      e.stopPropagation();
+      this.firePenButton(e as PointerEvent);
+      return;
+    }
     // Гасим контекстное меню после barrel-триггера мышью на ПК.
     if (this.suppressContext) {
       this.suppressContext = false;
@@ -163,6 +200,15 @@ export class PointerWatcher {
       e.stopPropagation();
     }
   };
+
+  /** Срабатывание режима penbutton с антидребезгом между путями (hover/contextmenu). */
+  private firePenButton(e: PointerEvent): void {
+    if (e.timeStamp - this.lastPenButtonFire < 400) return;
+    this.lastPenButtonFire = e.timeStamp;
+    e.preventDefault();
+    e.stopPropagation();
+    this.onTrigger({ clientX: e.clientX, clientY: e.clientY });
+  }
 
   private fire(e: PointerEvent): void {
     e.preventDefault();

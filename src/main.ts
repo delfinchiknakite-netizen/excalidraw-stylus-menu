@@ -393,10 +393,11 @@ class StylusMenuSettingTab extends PluginSettingTab {
       .setDesc("Чем открывать меню вставки пером.")
       .addDropdown((d) =>
         d
+          .addOption("penbutton", "Боковая кнопка S Pen (касание или парение)")
           .addOption("tapempty", "Касание пером по пустому месту")
           .addOption("longpress", "Долгое нажатие пером")
           .addOption("doubletap", "Двойное касание пером")
-          .addOption("barrel", "Боковая кнопка S Pen + касание")
+          .addOption("barrel", "Боковая кнопка S Pen + касание (barrel)")
           .setValue(this.plugin.settings.trigger)
           .onChange(async (v) => {
             this.plugin.settings.trigger = v as TriggerGesture;
