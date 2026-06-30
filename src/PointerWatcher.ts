@@ -7,6 +7,7 @@ export interface TriggerCtx {
 
 type Trigger = (ctx: TriggerCtx) => void;
 type Arm = () => void;
+type Pointer = (clientX: number, clientY: number) => void;
 type Debug = (info: string) => void;
 
 /**
@@ -38,6 +39,7 @@ export class PointerWatcher {
     private getSettings: () => StylusMenuSettings,
     private onTrigger: Trigger,
     private onArm: Arm,
+    private onPointer: Pointer,
     private onDebug: Debug,
   ) {}
 
@@ -79,6 +81,7 @@ export class PointerWatcher {
       this.onDebug(`down  type=${e.pointerType}  buttons=${e.buttons}  button=${e.button}`);
     }
     if (!this.penLike(e)) return;
+    this.onPointer(e.clientX, e.clientY); // запоминаем позицию пера (для команды)
     if (!this.onDrawSurface(e)) return; // не трогаем кнопки/панели Excalidraw
 
     if (s.trigger === "tapempty") {
@@ -126,6 +129,7 @@ export class PointerWatcher {
   };
 
   private move = (e: PointerEvent): void => {
+    if (this.penLike(e)) this.onPointer(e.clientX, e.clientY);
     const thr = this.getSettings().moveThresholdPx;
     if (this.armed) {
       const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);

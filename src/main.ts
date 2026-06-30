@@ -46,6 +46,10 @@ export default class StylusMenuPlugin extends Plugin {
   private connector = new ConnectorController();
   private snapshot: Set<string> | null = null;
   private snapApi: any = null;
+  private lastPointer: { clientX: number; clientY: number } | null = null;
+  private diagHandlers: Array<[string, (e: any) => void]> | null = null;
+  private diagLines: string[] = [];
+  private lastMoveSig = "";
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -54,6 +58,12 @@ export default class StylusMenuPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.syncWatchers()));
     this.registerEvent(this.app.workspace.on("layout-change", () => this.syncWatchers()));
     this.app.workspace.onLayoutReady(() => this.syncWatchers());
+
+    this.addCommand({
+      id: "open-insert-menu",
+      name: "Открыть меню вставки (стилус)",
+      callback: () => this.openMenuAtLastPointer(),
+    });
 
     this.addCommand({
       id: "toggle-debug-overlay",
@@ -71,6 +81,7 @@ export default class StylusMenuPlugin extends Plugin {
   onunload(): void {
     for (const w of Array.from(this.watchers.values())) w.detach();
     this.watchers.clear();
+    this.removeDiagnostics();
     this.removeDebugOverlay();
   }
 
@@ -93,14 +104,29 @@ export default class StylusMenuPlugin extends Plugin {
         () => this.settings,
         (ctx) => this.onTrigger(ctx),
         () => this.snapshotScene(),
-        (info) => this.updateDebug(info),
+        (x, y) => {
+          this.lastPointer = { clientX: x, clientY: y };
+        },
+        (info) => this.logLine(info),
       );
       watcher.attach();
       this.watchers.set(el, watcher);
     }
   }
 
-  /** Снимок id элементов сцены до начала жеста (для удаления артефактной точки). */
+  /* ---------- координаты ---------- */
+
+  private toScene(api: any, clientX: number, clientY: number): { x: number; y: number } {
+    const st = api.getAppState?.() ?? {};
+    const zoom = st?.zoom?.value ?? st?.zoom ?? 1;
+    return {
+      x: (clientX - (st.offsetLeft ?? 0)) / zoom - (st.scrollX ?? 0),
+      y: (clientY - (st.offsetTop ?? 0)) / zoom - (st.scrollY ?? 0),
+    };
+  }
+
+  /* ---------- очистка артефактной точки ---------- */
+
   private snapshotScene(): void {
     if (!this.settings.cleanupStrayDot) return;
     const api = getApi(this.app);
@@ -110,8 +136,7 @@ export default class StylusMenuPlugin extends Plugin {
       this.snapshot = new Set(els.filter((e: any) => !e.isDeleted).map((e: any) => e.id));
       this.snapApi = api;
     } catch {
-      this.snapshot = null;
-      this.snapApi = null;
+      this.clearSnapshot();
     }
   }
 
@@ -120,7 +145,6 @@ export default class StylusMenuPlugin extends Plugin {
     this.snapApi = null;
   }
 
-  /** Через короткую задержку удаляет крошечный штрих, случайно созданный пером при тапе. */
   private scheduleCleanup(): void {
     const snap = this.snapshot;
     const api = this.snapApi;
@@ -149,6 +173,8 @@ export default class StylusMenuPlugin extends Plugin {
     }, 80);
   }
 
+  /* ---------- основной обработчик жеста ---------- */
+
   private onTrigger(ctx: TriggerCtx): void {
     const ea = getEA(this.app);
     if (!ea) {
@@ -169,11 +195,7 @@ export default class StylusMenuPlugin extends Plugin {
       return;
     }
 
-    const st = api.getAppState?.() ?? {};
-    const zoom = st?.zoom?.value ?? st?.zoom ?? 1;
-    const sceneX = (ctx.clientX - (st.offsetLeft ?? 0)) / zoom - (st.scrollX ?? 0);
-    const sceneY = (ctx.clientY - (st.offsetTop ?? 0)) / zoom - (st.scrollY ?? 0);
-
+    const { x: sceneX, y: sceneY } = this.toScene(api, ctx.clientX, ctx.clientY);
     const elements = (api.getSceneElements?.() ?? []).filter(
       (el: any) => el && !el.isDeleted && hasBBox(el),
     );
@@ -190,7 +212,6 @@ export default class StylusMenuPlugin extends Plugin {
       }
     }
 
-    // Край блока → режим коннектора; иначе откроем меню.
     const handled = this.connector.handleTrigger({
       ea,
       api,
@@ -206,6 +227,31 @@ export default class StylusMenuPlugin extends Plugin {
 
     this.openInsertMenu(ctx, ea, sceneX, sceneY);
     this.scheduleCleanup();
+  }
+
+  /** Открыть меню по команде/хоткею: в последней позиции пера или в центре экрана. */
+  private openMenuAtLastPointer(): void {
+    const ea = getEA(this.app);
+    if (!ea) {
+      new Notice("Excalidraw не найден — откройте рисунок Excalidraw.");
+      return;
+    }
+    try {
+      ea.setView("active");
+    } catch {
+      /* ignore */
+    }
+    const api = getApi(this.app);
+    if (!api) {
+      new Notice("Откройте активный холст Excalidraw.");
+      return;
+    }
+    const p = this.lastPointer ?? {
+      clientX: window.innerWidth / 2,
+      clientY: window.innerHeight / 2,
+    };
+    const { x, y } = this.toScene(api, p.clientX, p.clientY);
+    this.openInsertMenu(p, ea, x, y);
   }
 
   private openInsertMenu(ctx: TriggerCtx, ea: any, x: number, y: number): void {
@@ -229,26 +275,75 @@ export default class StylusMenuPlugin extends Plugin {
     new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
   }
 
-  /* ---------- debug overlay ---------- */
+  /* ---------- диагностика стилуса ---------- */
 
   refreshDebugOverlay(): void {
-    if (this.settings.debugOverlay) this.ensureDebugOverlay();
-    else this.removeDebugOverlay();
+    if (this.settings.debugOverlay) {
+      this.ensureDebugOverlay();
+      this.installDiagnostics();
+    } else {
+      this.removeDiagnostics();
+      this.removeDebugOverlay();
+    }
   }
 
   private ensureDebugOverlay(): void {
     if (this.debugEl) return;
     this.debugEl = document.body.createDiv({ cls: "esm-debug" });
-    this.debugEl.setText("S Pen debug: коснитесь холста…");
+    this.debugEl.setText("S Pen debug: жмите кнопку пера в разных режимах…");
   }
 
   private removeDebugOverlay(): void {
     this.debugEl?.remove();
     this.debugEl = null;
+    this.diagLines = [];
   }
 
-  private updateDebug(info: string): void {
-    if (this.debugEl) this.debugEl.setText(info);
+  private logLine(s: string): void {
+    this.diagLines.push(s);
+    if (this.diagLines.length > 8) this.diagLines.shift();
+    if (this.debugEl) this.debugEl.setText(this.diagLines.join("\n"));
+  }
+
+  /**
+   * Глобальный сниффер: ловит события, в которых на Samsung может «всплыть»
+   * кнопка S Pen — наведение с зажатой кнопкой, contextmenu, auxclick, клавиши.
+   * pointerdown логируется самим PointerWatcher (на полотне).
+   */
+  private installDiagnostics(): void {
+    if (this.diagHandlers) return;
+    this.diagHandlers = [];
+    this.lastMoveSig = "";
+
+    const move = (e: PointerEvent) => {
+      if (e.pointerType !== "pen" && e.pointerType !== "mouse") return;
+      const sig = `${e.pointerType}:${e.buttons}`;
+      if (sig === this.lastMoveSig) return; // только при смене состояния кнопок
+      this.lastMoveSig = sig;
+      this.logLine(`hover ${e.pointerType} b=${e.buttons}`);
+    };
+    const up = (e: PointerEvent) =>
+      this.logLine(`up    ${e.pointerType} b=${e.buttons} btn=${e.button}`);
+    const ctx = (e: any) =>
+      this.logLine(`contextmenu type=${e.pointerType ?? "?"} btn=${e.button ?? "?"}`);
+    const aux = (e: any) => this.logLine(`auxclick btn=${e.button} type=${e.pointerType ?? "?"}`);
+    const key = (e: KeyboardEvent) => this.logLine(`keydown "${e.key}" code=${e.code}`);
+
+    const reg = (name: string, fn: (e: any) => void) => {
+      window.addEventListener(name, fn, true);
+      this.diagHandlers!.push([name, fn]);
+    };
+    reg("pointermove", move);
+    reg("pointerup", up);
+    reg("contextmenu", ctx);
+    reg("auxclick", aux);
+    reg("keydown", key);
+  }
+
+  private removeDiagnostics(): void {
+    if (!this.diagHandlers) return;
+    for (const [name, fn] of this.diagHandlers) window.removeEventListener(name, fn, true);
+    this.diagHandlers = null;
   }
 
   async loadSettings(): Promise<void> {
@@ -311,9 +406,7 @@ class StylusMenuSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Убирать случайную точку")
-      .setDesc(
-        "Если активен карандаш, тап пером может оставить точку — удалять её автоматически.",
-      )
+      .setDesc("Если активен карандаш, тап пером может оставить точку — удалять её автоматически.")
       .addToggle((t) =>
         t.setValue(this.plugin.settings.cleanupStrayDot).onChange(async (v) => {
           this.plugin.settings.cleanupStrayDot = v;
@@ -360,7 +453,10 @@ class StylusMenuSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Debug-оверлей")
-      .setDesc("Показывать pointerType и buttons последнего касания (диагностика пера).")
+      .setDesc(
+        "Лог событий стилуса (наведение, contextmenu, auxclick, клавиши) — чтобы увидеть, " +
+          "в каком событии всплывает боковая кнопка S Pen.",
+      )
       .addToggle((t) =>
         t.setValue(this.plugin.settings.debugOverlay).onChange(async (v) => {
           this.plugin.settings.debugOverlay = v;

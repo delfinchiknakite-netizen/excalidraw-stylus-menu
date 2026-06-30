@@ -42,11 +42,12 @@ var DEFAULT_SETTINGS = {
 
 // src/PointerWatcher.ts
 var PointerWatcher = class {
-  constructor(el, getSettings, onTrigger, onArm, onDebug) {
+  constructor(el, getSettings, onTrigger, onArm, onPointer, onDebug) {
     this.el = el;
     this.getSettings = getSettings;
     this.onTrigger = onTrigger;
     this.onArm = onArm;
+    this.onPointer = onPointer;
     this.onDebug = onDebug;
     this.longPressTimer = null;
     this.downX = 0;
@@ -63,6 +64,7 @@ var PointerWatcher = class {
         this.onDebug(`down  type=${e.pointerType}  buttons=${e.buttons}  button=${e.button}`);
       }
       if (!this.penLike(e)) return;
+      this.onPointer(e.clientX, e.clientY);
       if (!this.onDrawSurface(e)) return;
       if (s.trigger === "tapempty") {
         if (!(e.buttons & 1)) return;
@@ -105,6 +107,7 @@ var PointerWatcher = class {
       }
     };
     this.move = (e) => {
+      if (this.penLike(e)) this.onPointer(e.clientX, e.clientY);
       const thr = this.getSettings().moveThresholdPx;
       if (this.armed) {
         const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
@@ -491,6 +494,10 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     this.connector = new ConnectorController();
     this.snapshot = null;
     this.snapApi = null;
+    this.lastPointer = null;
+    this.diagHandlers = null;
+    this.diagLines = [];
+    this.lastMoveSig = "";
   }
   async onload() {
     await this.loadSettings();
@@ -498,6 +505,11 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.syncWatchers()));
     this.registerEvent(this.app.workspace.on("layout-change", () => this.syncWatchers()));
     this.app.workspace.onLayoutReady(() => this.syncWatchers());
+    this.addCommand({
+      id: "open-insert-menu",
+      name: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043C\u0435\u043D\u044E \u0432\u0441\u0442\u0430\u0432\u043A\u0438 (\u0441\u0442\u0438\u043B\u0443\u0441)",
+      callback: () => this.openMenuAtLastPointer()
+    });
     this.addCommand({
       id: "toggle-debug-overlay",
       name: "\u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0438\u0442\u044C debug-\u043E\u0432\u0435\u0440\u043B\u0435\u0439 \u0441\u0442\u0438\u043B\u0443\u0441\u0430",
@@ -512,6 +524,7 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
   onunload() {
     for (const w of Array.from(this.watchers.values())) w.detach();
     this.watchers.clear();
+    this.removeDiagnostics();
     this.removeDebugOverlay();
   }
   /** Навешивает PointerWatcher на все открытые вью Excalidraw, снимает с закрытых. */
@@ -533,13 +546,26 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
         () => this.settings,
         (ctx) => this.onTrigger(ctx),
         () => this.snapshotScene(),
-        (info) => this.updateDebug(info)
+        (x, y) => {
+          this.lastPointer = { clientX: x, clientY: y };
+        },
+        (info) => this.logLine(info)
       );
       watcher.attach();
       this.watchers.set(el, watcher);
     }
   }
-  /** Снимок id элементов сцены до начала жеста (для удаления артефактной точки). */
+  /* ---------- координаты ---------- */
+  toScene(api, clientX, clientY) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i;
+    const st = (_b = (_a = api.getAppState) == null ? void 0 : _a.call(api)) != null ? _b : {};
+    const zoom = (_e = (_d = (_c = st == null ? void 0 : st.zoom) == null ? void 0 : _c.value) != null ? _d : st == null ? void 0 : st.zoom) != null ? _e : 1;
+    return {
+      x: (clientX - ((_f = st.offsetLeft) != null ? _f : 0)) / zoom - ((_g = st.scrollX) != null ? _g : 0),
+      y: (clientY - ((_h = st.offsetTop) != null ? _h : 0)) / zoom - ((_i = st.scrollY) != null ? _i : 0)
+    };
+  }
+  /* ---------- очистка артефактной точки ---------- */
   snapshotScene() {
     var _a, _b;
     if (!this.settings.cleanupStrayDot) return;
@@ -550,15 +576,13 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       this.snapshot = new Set(els.filter((e) => !e.isDeleted).map((e) => e.id));
       this.snapApi = api;
     } catch (e) {
-      this.snapshot = null;
-      this.snapApi = null;
+      this.clearSnapshot();
     }
   }
   clearSnapshot() {
     this.snapshot = null;
     this.snapApi = null;
   }
-  /** Через короткую задержку удаляет крошечный штрих, случайно созданный пером при тапе. */
   scheduleCleanup() {
     const snap = this.snapshot;
     const api = this.snapApi;
@@ -583,8 +607,9 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       }
     }, 80);
   }
+  /* ---------- основной обработчик жеста ---------- */
   onTrigger(ctx) {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    var _a, _b;
     const ea = getEA(this.app);
     if (!ea) {
       this.clearSnapshot();
@@ -601,11 +626,8 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0445\u043E\u043B\u0441\u0442 Excalidraw \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D.");
       return;
     }
-    const st = (_b = (_a = api.getAppState) == null ? void 0 : _a.call(api)) != null ? _b : {};
-    const zoom = (_e = (_d = (_c = st == null ? void 0 : st.zoom) == null ? void 0 : _c.value) != null ? _d : st == null ? void 0 : st.zoom) != null ? _e : 1;
-    const sceneX = (ctx.clientX - ((_f = st.offsetLeft) != null ? _f : 0)) / zoom - ((_g = st.scrollX) != null ? _g : 0);
-    const sceneY = (ctx.clientY - ((_h = st.offsetTop) != null ? _h : 0)) / zoom - ((_i = st.scrollY) != null ? _i : 0);
-    const elements = ((_k = (_j = api.getSceneElements) == null ? void 0 : _j.call(api)) != null ? _k : []).filter(
+    const { x: sceneX, y: sceneY } = this.toScene(api, ctx.clientX, ctx.clientY);
+    const elements = ((_b = (_a = api.getSceneElements) == null ? void 0 : _a.call(api)) != null ? _b : []).filter(
       (el) => el && !el.isDeleted && hasBBox(el)
     );
     const margin = this.settings.edgeMarginPx;
@@ -632,6 +654,30 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     this.openInsertMenu(ctx, ea, sceneX, sceneY);
     this.scheduleCleanup();
   }
+  /** Открыть меню по команде/хоткею: в последней позиции пера или в центре экрана. */
+  openMenuAtLastPointer() {
+    var _a;
+    const ea = getEA(this.app);
+    if (!ea) {
+      new import_obsidian3.Notice("Excalidraw \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u2014 \u043E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0440\u0438\u0441\u0443\u043D\u043E\u043A Excalidraw.");
+      return;
+    }
+    try {
+      ea.setView("active");
+    } catch (e) {
+    }
+    const api = getApi(this.app);
+    if (!api) {
+      new import_obsidian3.Notice("\u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u0430\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0445\u043E\u043B\u0441\u0442 Excalidraw.");
+      return;
+    }
+    const p = (_a = this.lastPointer) != null ? _a : {
+      clientX: window.innerWidth / 2,
+      clientY: window.innerHeight / 2
+    };
+    const { x, y } = this.toScene(api, p.clientX, p.clientY);
+    this.openInsertMenu(p, ea, x, y);
+  }
   openInsertMenu(ctx, ea, x, y) {
     const items = [
       { label: "\u270E  \u0422\u0435\u043A\u0441\u0442", onClick: () => insertText(ea, this.app, x, y) },
@@ -652,23 +698,72 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     ];
     new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
   }
-  /* ---------- debug overlay ---------- */
+  /* ---------- диагностика стилуса ---------- */
   refreshDebugOverlay() {
-    if (this.settings.debugOverlay) this.ensureDebugOverlay();
-    else this.removeDebugOverlay();
+    if (this.settings.debugOverlay) {
+      this.ensureDebugOverlay();
+      this.installDiagnostics();
+    } else {
+      this.removeDiagnostics();
+      this.removeDebugOverlay();
+    }
   }
   ensureDebugOverlay() {
     if (this.debugEl) return;
     this.debugEl = document.body.createDiv({ cls: "esm-debug" });
-    this.debugEl.setText("S Pen debug: \u043A\u043E\u0441\u043D\u0438\u0442\u0435\u0441\u044C \u0445\u043E\u043B\u0441\u0442\u0430\u2026");
+    this.debugEl.setText("S Pen debug: \u0436\u043C\u0438\u0442\u0435 \u043A\u043D\u043E\u043F\u043A\u0443 \u043F\u0435\u0440\u0430 \u0432 \u0440\u0430\u0437\u043D\u044B\u0445 \u0440\u0435\u0436\u0438\u043C\u0430\u0445\u2026");
   }
   removeDebugOverlay() {
     var _a;
     (_a = this.debugEl) == null ? void 0 : _a.remove();
     this.debugEl = null;
+    this.diagLines = [];
   }
-  updateDebug(info) {
-    if (this.debugEl) this.debugEl.setText(info);
+  logLine(s) {
+    this.diagLines.push(s);
+    if (this.diagLines.length > 8) this.diagLines.shift();
+    if (this.debugEl) this.debugEl.setText(this.diagLines.join("\n"));
+  }
+  /**
+   * Глобальный сниффер: ловит события, в которых на Samsung может «всплыть»
+   * кнопка S Pen — наведение с зажатой кнопкой, contextmenu, auxclick, клавиши.
+   * pointerdown логируется самим PointerWatcher (на полотне).
+   */
+  installDiagnostics() {
+    if (this.diagHandlers) return;
+    this.diagHandlers = [];
+    this.lastMoveSig = "";
+    const move = (e) => {
+      if (e.pointerType !== "pen" && e.pointerType !== "mouse") return;
+      const sig = `${e.pointerType}:${e.buttons}`;
+      if (sig === this.lastMoveSig) return;
+      this.lastMoveSig = sig;
+      this.logLine(`hover ${e.pointerType} b=${e.buttons}`);
+    };
+    const up = (e) => this.logLine(`up    ${e.pointerType} b=${e.buttons} btn=${e.button}`);
+    const ctx = (e) => {
+      var _a, _b;
+      return this.logLine(`contextmenu type=${(_a = e.pointerType) != null ? _a : "?"} btn=${(_b = e.button) != null ? _b : "?"}`);
+    };
+    const aux = (e) => {
+      var _a;
+      return this.logLine(`auxclick btn=${e.button} type=${(_a = e.pointerType) != null ? _a : "?"}`);
+    };
+    const key = (e) => this.logLine(`keydown "${e.key}" code=${e.code}`);
+    const reg = (name, fn) => {
+      window.addEventListener(name, fn, true);
+      this.diagHandlers.push([name, fn]);
+    };
+    reg("pointermove", move);
+    reg("pointerup", up);
+    reg("contextmenu", ctx);
+    reg("auxclick", aux);
+    reg("keydown", key);
+  }
+  removeDiagnostics() {
+    if (!this.diagHandlers) return;
+    for (const [name, fn] of this.diagHandlers) window.removeEventListener(name, fn, true);
+    this.diagHandlers = null;
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -702,9 +797,7 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u0423\u0431\u0438\u0440\u0430\u0442\u044C \u0441\u043B\u0443\u0447\u0430\u0439\u043D\u0443\u044E \u0442\u043E\u0447\u043A\u0443").setDesc(
-      "\u0415\u0441\u043B\u0438 \u0430\u043A\u0442\u0438\u0432\u0435\u043D \u043A\u0430\u0440\u0430\u043D\u0434\u0430\u0448, \u0442\u0430\u043F \u043F\u0435\u0440\u043E\u043C \u043C\u043E\u0436\u0435\u0442 \u043E\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u0442\u043E\u0447\u043A\u0443 \u2014 \u0443\u0434\u0430\u043B\u044F\u0442\u044C \u0435\u0451 \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438."
-    ).addToggle(
+    new import_obsidian3.Setting(containerEl).setName("\u0423\u0431\u0438\u0440\u0430\u0442\u044C \u0441\u043B\u0443\u0447\u0430\u0439\u043D\u0443\u044E \u0442\u043E\u0447\u043A\u0443").setDesc("\u0415\u0441\u043B\u0438 \u0430\u043A\u0442\u0438\u0432\u0435\u043D \u043A\u0430\u0440\u0430\u043D\u0434\u0430\u0448, \u0442\u0430\u043F \u043F\u0435\u0440\u043E\u043C \u043C\u043E\u0436\u0435\u0442 \u043E\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u0442\u043E\u0447\u043A\u0443 \u2014 \u0443\u0434\u0430\u043B\u044F\u0442\u044C \u0435\u0451 \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438.").addToggle(
       (t) => t.setValue(this.plugin.settings.cleanupStrayDot).onChange(async (v) => {
         this.plugin.settings.cleanupStrayDot = v;
         await this.plugin.saveSettings();
@@ -746,7 +839,9 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
       () => this.plugin.settings.defaultRectH,
       (n) => this.plugin.settings.defaultRectH = n
     );
-    new import_obsidian3.Setting(containerEl).setName("Debug-\u043E\u0432\u0435\u0440\u043B\u0435\u0439").setDesc("\u041F\u043E\u043A\u0430\u0437\u044B\u0432\u0430\u0442\u044C pointerType \u0438 buttons \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0433\u043E \u043A\u0430\u0441\u0430\u043D\u0438\u044F (\u0434\u0438\u0430\u0433\u043D\u043E\u0441\u0442\u0438\u043A\u0430 \u043F\u0435\u0440\u0430).").addToggle(
+    new import_obsidian3.Setting(containerEl).setName("Debug-\u043E\u0432\u0435\u0440\u043B\u0435\u0439").setDesc(
+      "\u041B\u043E\u0433 \u0441\u043E\u0431\u044B\u0442\u0438\u0439 \u0441\u0442\u0438\u043B\u0443\u0441\u0430 (\u043D\u0430\u0432\u0435\u0434\u0435\u043D\u0438\u0435, contextmenu, auxclick, \u043A\u043B\u0430\u0432\u0438\u0448\u0438) \u2014 \u0447\u0442\u043E\u0431\u044B \u0443\u0432\u0438\u0434\u0435\u0442\u044C, \u0432 \u043A\u0430\u043A\u043E\u043C \u0441\u043E\u0431\u044B\u0442\u0438\u0438 \u0432\u0441\u043F\u043B\u044B\u0432\u0430\u0435\u0442 \u0431\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen."
+    ).addToggle(
       (t) => t.setValue(this.plugin.settings.debugOverlay).onChange(async (v) => {
         this.plugin.settings.debugOverlay = v;
         await this.plugin.saveSettings();
