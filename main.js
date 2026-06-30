@@ -63,6 +63,7 @@ var PointerWatcher = class {
         this.onDebug(`down  type=${e.pointerType}  buttons=${e.buttons}  button=${e.button}`);
       }
       if (!this.penLike(e)) return;
+      if (!this.onDrawSurface(e)) return;
       if (s.trigger === "tapempty") {
         if (!(e.buttons & 1)) return;
         this.downX = e.clientX;
@@ -152,6 +153,15 @@ var PointerWatcher = class {
   /** Перо или мышь (мышь — чтобы тестировать на ПК). Палец игнорируем. */
   penLike(e) {
     return e.pointerType === "pen" || e.pointerType === "mouse";
+  }
+  /**
+   * Реагируем только на касания собственно полотна Excalidraw (<canvas>), а не
+   * элементов интерфейса (панель инструментов, кнопки, меню) — иначе тап по
+   * кнопкам Excalidraw распознавался бы как «тап по пустому месту».
+   */
+  onDrawSurface(e) {
+    const t = e.target;
+    return !!t && t.tagName === "CANVAS";
   }
   fire(e) {
     var _a;
