@@ -9,6 +9,8 @@ export interface StylusMenuSettings {
   doubleTapMs: number;
   /** Допустимое движение пера, px, чтобы жест ещё считался "на месте" (тап, не штрих). */
   moveThresholdPx: number;
+  /** Минимальный горизонтальный свайп пером с кнопкой (парение), px → undo/redo. */
+  penSwipeMinPx: number;
   /** Зона у рамки блока (в координатах сцены), считающаяся "краем" для коннектора. */
   edgeMarginPx: number;
   /** Удалять случайную точку-артефакт, нарисованную пером при тапе (карандаш). */
@@ -28,6 +30,7 @@ export const DEFAULT_SETTINGS: StylusMenuSettings = {
   longPressMs: 450,
   doubleTapMs: 300,
   moveThresholdPx: 8,
+  penSwipeMinPx: 60,
   edgeMarginPx: 16,
   cleanupStrayDot: true,
   debugOverlay: false,

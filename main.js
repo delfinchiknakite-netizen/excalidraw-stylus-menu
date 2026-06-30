@@ -31,6 +31,7 @@ var DEFAULT_SETTINGS = {
   longPressMs: 450,
   doubleTapMs: 300,
   moveThresholdPx: 8,
+  penSwipeMinPx: 60,
   edgeMarginPx: 16,
   cleanupStrayDot: true,
   debugOverlay: false,
@@ -42,13 +43,14 @@ var DEFAULT_SETTINGS = {
 
 // src/PointerWatcher.ts
 var PointerWatcher = class {
-  constructor(el, getSettings, onTrigger, onArm, onPointer, onDebug) {
+  constructor(el, getSettings, onTrigger, onArm, onPointer, onDebug, onSwipe) {
     this.el = el;
     this.getSettings = getSettings;
     this.onTrigger = onTrigger;
     this.onArm = onArm;
     this.onPointer = onPointer;
     this.onDebug = onDebug;
+    this.onSwipe = onSwipe;
     this.longPressTimer = null;
     this.downX = 0;
     this.downY = 0;
@@ -60,9 +62,13 @@ var PointerWatcher = class {
     this.suppressContext = false;
     /** Перо в контакте с полотном (после pointerdown с buttons&1). */
     this.penDown = false;
-    /** Кнопка пера уже сработала в этом «нажатии» при парении — не дублировать. */
-    this.penButtonFired = false;
-    /** Время последнего срабатывания penbutton (антидребезг между путями). */
+    /** Боковая кнопка зажата во время ПАРЕНИЯ (без касания). */
+    this.penBtnActive = false;
+    /** Свайп уже распознан в этом нажатии кнопки — не открывать меню и не дублировать. */
+    this.penBtnConsumed = false;
+    this.penBtnStartX = 0;
+    this.penBtnStartY = 0;
+    /** Время последнего срабатывания penbutton (антидребезг). */
     this.lastPenButtonFire = 0;
     this.down = (e) => {
       const s = this.getSettings();
@@ -70,11 +76,13 @@ var PointerWatcher = class {
         this.onDebug(`down  type=${e.pointerType}  buttons=${e.buttons}  button=${e.button}`);
       }
       if (!this.penLike(e)) return;
-      if (e.buttons & 1) this.penDown = true;
+      if (e.buttons & 1) {
+        this.penDown = true;
+        this.penBtnActive = false;
+      }
       this.onPointer(e.clientX, e.clientY);
       if (!this.onDrawSurface(e)) return;
       if (s.trigger === "penbutton") {
-        if (e.buttons & 1) this.onArm();
         return;
       }
       if (s.trigger === "tapempty") {
@@ -122,11 +130,29 @@ var PointerWatcher = class {
       const s = this.getSettings();
       if (s.trigger === "penbutton" && e.pointerType === "pen") {
         const pressed = !!(e.buttons & 1);
-        if (pressed && !this.penDown && !this.penButtonFired) {
-          this.penButtonFired = true;
-          this.firePenButton(e);
+        if (pressed && !this.penDown) {
+          if (!this.penBtnActive) {
+            this.penBtnActive = true;
+            this.penBtnConsumed = false;
+            this.penBtnStartX = e.clientX;
+            this.penBtnStartY = e.clientY;
+          } else if (!this.penBtnConsumed) {
+            const dx = e.clientX - this.penBtnStartX;
+            const dy = e.clientY - this.penBtnStartY;
+            if (Math.abs(dx) >= s.penSwipeMinPx && Math.abs(dx) > Math.abs(dy)) {
+              this.penBtnConsumed = true;
+              this.firePenButton(e, () => this.onSwipe(dx > 0 ? "redo" : "undo"));
+            }
+          }
+        } else if (this.penBtnActive && !pressed) {
+          this.penBtnActive = false;
+          if (!this.penBtnConsumed) {
+            this.firePenButton(
+              e,
+              () => this.onTrigger({ clientX: this.penBtnStartX, clientY: this.penBtnStartY })
+            );
+          }
         }
-        if (!pressed) this.penButtonFired = false;
       }
       const thr = s.moveThresholdPx;
       if (this.armed) {
@@ -150,6 +176,8 @@ var PointerWatcher = class {
     this.cancel = () => {
       this.clearTimer();
       this.penDown = false;
+      this.penBtnActive = false;
+      this.penBtnConsumed = false;
       this.armed = false;
     };
     this.ctx = (e) => {
@@ -157,7 +185,6 @@ var PointerWatcher = class {
       if (s.trigger === "penbutton" && e.pointerType === "pen") {
         e.preventDefault();
         e.stopPropagation();
-        this.firePenButton(e);
         return;
       }
       if (this.suppressContext) {
@@ -195,13 +222,13 @@ var PointerWatcher = class {
     const t = e.target;
     return !!t && t.tagName === "CANVAS";
   }
-  /** Срабатывание режима penbutton с антидребезгом между путями (hover/contextmenu). */
-  firePenButton(e) {
+  /** Срабатывание режима penbutton с антидребезгом. */
+  firePenButton(e, action) {
     if (e.timeStamp - this.lastPenButtonFire < 400) return;
     this.lastPenButtonFire = e.timeStamp;
     e.preventDefault();
     e.stopPropagation();
-    this.onTrigger({ clientX: e.clientX, clientY: e.clientY });
+    action();
   }
   fire(e) {
     var _a;
@@ -586,7 +613,8 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
         (x, y) => {
           this.lastPointer = { clientX: x, clientY: y };
         },
-        (info) => this.logLine(info)
+        (info) => this.logLine(info),
+        (dir) => this.undoRedo(el, dir)
       );
       watcher.attach();
       this.watchers.set(el, watcher);
@@ -690,6 +718,28 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     }
     this.openInsertMenu(ctx, ea, sceneX, sceneY);
     this.scheduleCleanup();
+  }
+  /**
+   * Undo/redo по свайпу пером с кнопкой. В imperative-API Excalidraw нет метода
+   * undo/redo, поэтому шлём синтетический Ctrl/Cmd+Z (Shift — для redo) в контейнер
+   * Excalidraw — его глобальный keydown-обработчик это распознаёт независимо от версии.
+   * ctrlKey и metaKey ставим оба: на Android сработает ctrlKey, на macOS — metaKey.
+   */
+  undoRedo(viewEl, dir) {
+    var _a, _b;
+    const target = (_b = (_a = viewEl.querySelector(".excalidraw")) != null ? _a : viewEl.querySelector("canvas")) != null ? _b : viewEl;
+    const ev = new KeyboardEvent("keydown", {
+      key: "z",
+      code: "KeyZ",
+      keyCode: 90,
+      which: 90,
+      ctrlKey: true,
+      metaKey: true,
+      shiftKey: dir === "redo",
+      bubbles: true,
+      cancelable: true
+    });
+    target.dispatchEvent(ev);
   }
   /** Открыть меню по команде/хоткею: в последней позиции пера или в центре экрана. */
   openMenuAtLastPointer() {
@@ -829,7 +879,7 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian3.Setting(containerEl).setName("\u0416\u0435\u0441\u0442-\u0442\u0440\u0438\u0433\u0433\u0435\u0440").setDesc("\u0427\u0435\u043C \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0442\u044C \u043C\u0435\u043D\u044E \u0432\u0441\u0442\u0430\u0432\u043A\u0438 \u043F\u0435\u0440\u043E\u043C.").addDropdown(
-      (d) => d.addOption("penbutton", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen (\u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u0438\u043B\u0438 \u043F\u0430\u0440\u0435\u043D\u0438\u0435)").addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435 (barrel)").setValue(this.plugin.settings.trigger).onChange(async (v) => {
+      (d) => d.addOption("penbutton", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen \u043F\u0440\u0438 \u043F\u0430\u0440\u0435\u043D\u0438\u0438 (\u0442\u0430\u043F\u2192\u043C\u0435\u043D\u044E, \u0441\u0432\u0430\u0439\u043F\u2192undo/redo)").addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435 (barrel)").setValue(this.plugin.settings.trigger).onChange(async (v) => {
         this.plugin.settings.trigger = v;
         await this.plugin.saveSettings();
       })
@@ -845,6 +895,12 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
       "\u0415\u0441\u043B\u0438 \u043F\u0435\u0440\u043E \u0441\u0434\u0432\u0438\u043D\u0443\u043B\u043E\u0441\u044C \u0431\u043E\u043B\u044C\u0448\u0435 \u2014 \u044D\u0442\u043E \u0440\u0438\u0441\u043E\u0432\u0430\u043D\u0438\u0435, \u0430 \u043D\u0435 \u0442\u0430\u043F.",
       () => this.plugin.settings.moveThresholdPx,
       (n) => this.plugin.settings.moveThresholdPx = n
+    );
+    this.numberField(
+      "\u0421\u0432\u0430\u0439\u043F \u043A\u043D\u043E\u043F\u043A\u043E\u0439 (undo/redo), px",
+      "\u041F\u0430\u0440\u0435\u043D\u0438\u0435 \u0441 \u0437\u0430\u0436\u0430\u0442\u043E\u0439 \u043A\u043D\u043E\u043F\u043A\u043E\u0439: \u0441\u0432\u0430\u0439\u043F \u0432\u043F\u0440\u0430\u0432\u043E \u2192 redo, \u0432\u043B\u0435\u0432\u043E \u2192 undo. \u041C\u0435\u043D\u044C\u0448\u0435 \u2014 \u0447\u0443\u0432\u0441\u0442\u0432\u0438\u0442\u0435\u043B\u044C\u043D\u0435\u0435.",
+      () => this.plugin.settings.penSwipeMinPx,
+      (n) => this.plugin.settings.penSwipeMinPx = n
     );
     this.numberField(
       "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435, \u043C\u0441",

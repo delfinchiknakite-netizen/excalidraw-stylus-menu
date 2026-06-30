@@ -108,6 +108,7 @@ export default class StylusMenuPlugin extends Plugin {
           this.lastPointer = { clientX: x, clientY: y };
         },
         (info) => this.logLine(info),
+        (dir) => this.undoRedo(el, dir),
       );
       watcher.attach();
       this.watchers.set(el, watcher);
@@ -227,6 +228,31 @@ export default class StylusMenuPlugin extends Plugin {
 
     this.openInsertMenu(ctx, ea, sceneX, sceneY);
     this.scheduleCleanup();
+  }
+
+  /**
+   * Undo/redo по свайпу пером с кнопкой. В imperative-API Excalidraw нет метода
+   * undo/redo, поэтому шлём синтетический Ctrl/Cmd+Z (Shift — для redo) в контейнер
+   * Excalidraw — его глобальный keydown-обработчик это распознаёт независимо от версии.
+   * ctrlKey и metaKey ставим оба: на Android сработает ctrlKey, на macOS — metaKey.
+   */
+  private undoRedo(viewEl: HTMLElement, dir: "undo" | "redo"): void {
+    const target =
+      (viewEl.querySelector(".excalidraw") as HTMLElement | null) ??
+      (viewEl.querySelector("canvas") as HTMLElement | null) ??
+      viewEl;
+    const ev = new KeyboardEvent("keydown", {
+      key: "z",
+      code: "KeyZ",
+      keyCode: 90,
+      which: 90,
+      ctrlKey: true,
+      metaKey: true,
+      shiftKey: dir === "redo",
+      bubbles: true,
+      cancelable: true,
+    });
+    target.dispatchEvent(ev);
   }
 
   /** Открыть меню по команде/хоткею: в последней позиции пера или в центре экрана. */
@@ -393,7 +419,7 @@ class StylusMenuSettingTab extends PluginSettingTab {
       .setDesc("Чем открывать меню вставки пером.")
       .addDropdown((d) =>
         d
-          .addOption("penbutton", "Боковая кнопка S Pen (касание или парение)")
+          .addOption("penbutton", "Боковая кнопка S Pen при парении (тап→меню, свайп→undo/redo)")
           .addOption("tapempty", "Касание пером по пустому месту")
           .addOption("longpress", "Долгое нажатие пером")
           .addOption("doubletap", "Двойное касание пером")
@@ -420,6 +446,12 @@ class StylusMenuSettingTab extends PluginSettingTab {
       "Если перо сдвинулось больше — это рисование, а не тап.",
       () => this.plugin.settings.moveThresholdPx,
       (n) => (this.plugin.settings.moveThresholdPx = n),
+    );
+    this.numberField(
+      "Свайп кнопкой (undo/redo), px",
+      "Парение с зажатой кнопкой: свайп вправо → redo, влево → undo. Меньше — чувствительнее.",
+      () => this.plugin.settings.penSwipeMinPx,
+      (n) => (this.plugin.settings.penSwipeMinPx = n),
     );
     this.numberField(
       "Долгое нажатие, мс",
