@@ -58,8 +58,8 @@ export class PointerWatcher {
     private onArm: Arm,
     private onPointer: Pointer,
     private onDebug: Debug,
-    private onToolToggle: Action,
-    private onToolMenu: Trigger,
+    private onDoubleTap: Action,
+    private onHold: Trigger,
   ) {}
 
   attach(): void {
@@ -166,7 +166,7 @@ export class PointerWatcher {
     const s = this.getSettings();
 
     // penbutton: кнопка во время ПАРЕНИЯ (без касания) приходит как buttons&1.
-    // Одиночный тап → меню вставки; двойной тап → перо⇄ластик; удержание → меню инструментов.
+    // Одиночный тап → меню вставки; двойной тап → копировать; удержание → вставить.
     if (s.trigger === "penbutton" && e.pointerType === "pen" && !this.penDown) {
       const pressed = !!(e.buttons & 1);
       if (pressed && !this.penBtnActive) {
@@ -250,7 +250,7 @@ export class PointerWatcher {
     if (e.timeStamp - this.lastBtnTap < s.doubleTapMs) {
       this.lastBtnTap = 0;
       this.clearTapTimer();
-      this.onToolToggle();
+      this.onDoubleTap();
       return;
     }
     this.lastBtnTap = e.timeStamp;
@@ -272,7 +272,7 @@ export class PointerWatcher {
       this.holdTimer = null;
       this.penBtnHeldOpen = true;
       this.clearTapTimer();
-      this.onToolMenu({ clientX: x, clientY: y });
+      this.onHold({ clientX: x, clientY: y });
     }, this.getSettings().longPressMs);
   }
 

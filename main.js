@@ -42,15 +42,15 @@ var DEFAULT_SETTINGS = {
 
 // src/PointerWatcher.ts
 var PointerWatcher = class {
-  constructor(el, getSettings, onTrigger, onArm, onPointer, onDebug, onToolToggle, onToolMenu) {
+  constructor(el, getSettings, onTrigger, onArm, onPointer, onDebug, onDoubleTap, onHold) {
     this.el = el;
     this.getSettings = getSettings;
     this.onTrigger = onTrigger;
     this.onArm = onArm;
     this.onPointer = onPointer;
     this.onDebug = onDebug;
-    this.onToolToggle = onToolToggle;
-    this.onToolMenu = onToolMenu;
+    this.onDoubleTap = onDoubleTap;
+    this.onHold = onHold;
     this.longPressTimer = null;
     this.downX = 0;
     this.downY = 0;
@@ -238,7 +238,7 @@ var PointerWatcher = class {
     if (e.timeStamp - this.lastBtnTap < s.doubleTapMs) {
       this.lastBtnTap = 0;
       this.clearTapTimer();
-      this.onToolToggle();
+      this.onDoubleTap();
       return;
     }
     this.lastBtnTap = e.timeStamp;
@@ -259,7 +259,7 @@ var PointerWatcher = class {
       this.holdTimer = null;
       this.penBtnHeldOpen = true;
       this.clearTapTimer();
-      this.onToolMenu({ clientX: x, clientY: y });
+      this.onHold({ clientX: x, clientY: y });
     }, this.getSettings().longPressMs);
   }
   clearHoldTimer() {
@@ -591,6 +591,12 @@ function getApi(app) {
     return null;
   }
 }
+function genId() {
+  const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-";
+  let s = "";
+  for (let i = 0; i < 21; i++) s += chars[Math.random() * chars.length | 0];
+  return s;
+}
 function hasBBox(el) {
   return el && typeof el.x === "number" && typeof el.y === "number" && typeof el.width === "number" && typeof el.height === "number";
 }
@@ -606,6 +612,8 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     this.diagHandlers = null;
     this.diagLines = [];
     this.lastMoveSig = "";
+    /** Внутренний буфер копирования: глубокие копии скопированных элементов сцены. */
+    this.clipboard = null;
   }
   async onload() {
     await this.loadSettings();
@@ -617,6 +625,24 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       id: "open-insert-menu",
       name: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043C\u0435\u043D\u044E \u0432\u0441\u0442\u0430\u0432\u043A\u0438 (\u0441\u0442\u0438\u043B\u0443\u0441)",
       callback: () => this.openMenuAtLastPointer()
+    });
+    this.addCommand({
+      id: "copy-selection",
+      name: "\u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0432\u044B\u0434\u0435\u043B\u0435\u043D\u043D\u043E\u0435 (\u0441\u0442\u0438\u043B\u0443\u0441)",
+      callback: () => this.copySelection()
+    });
+    this.addCommand({
+      id: "paste-clipboard",
+      name: "\u0412\u0441\u0442\u0430\u0432\u0438\u0442\u044C (\u0441\u0442\u0438\u043B\u0443\u0441)",
+      callback: () => {
+        var _a;
+        return this.pasteClipboard(
+          (_a = this.lastPointer) != null ? _a : {
+            clientX: window.innerWidth / 2,
+            clientY: window.innerHeight / 2
+          }
+        );
+      }
     });
     this.addCommand({
       id: "toggle-debug-overlay",
@@ -658,8 +684,8 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
           this.lastPointer = { clientX: x, clientY: y };
         },
         (info) => this.logLine(info),
-        () => this.toggleEraser(),
-        (ctx) => this.openToolMenu(ctx)
+        () => this.copySelection(),
+        (ctx) => this.pasteClipboard(ctx)
       );
       watcher.attach();
       this.watchers.set(el, watcher);
@@ -808,56 +834,104 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     ];
     new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
   }
-  /* ---------- инструменты (жесты кнопкой при парении) ---------- */
-  /** Выбрать активный инструмент Excalidraw (надёжно, через API). */
-  setTool(type) {
-    const ea = getEA(this.app);
-    if (!ea) {
-      new import_obsidian3.Notice("Excalidraw \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u2014 \u0432\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u043F\u043B\u0430\u0433\u0438\u043D Excalidraw.");
-      return;
-    }
-    try {
-      ea.setView("active");
-    } catch (e) {
-    }
+  /* ---------- копировать / вставить (жесты кнопкой при парении) ---------- */
+  /** Двойной тап кнопкой: скопировать выделенные элементы во внутренний буфер плагина. */
+  copySelection() {
+    var _a, _b, _c, _d;
     const api = getApi(this.app);
-    if (!(api == null ? void 0 : api.setActiveTool)) {
+    if (!(api == null ? void 0 : api.getSceneElements)) {
       new import_obsidian3.Notice("\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0445\u043E\u043B\u0441\u0442 Excalidraw \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D.");
       return;
     }
-    try {
-      api.setActiveTool({ type });
-    } catch (err) {
-      console.error("[excalidraw-stylus-menu] setActiveTool failed", err);
+    const st = (_b = (_a = api.getAppState) == null ? void 0 : _a.call(api)) != null ? _b : {};
+    const sel = (_c = st.selectedElementIds) != null ? _c : {};
+    const selected = ((_d = api.getSceneElements()) != null ? _d : []).filter(
+      (el) => el && !el.isDeleted && sel[el.id]
+    );
+    if (!selected.length) {
+      new import_obsidian3.Notice("\u041D\u0435\u0447\u0435\u0433\u043E \u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u2014 \u0432\u044B\u0434\u0435\u043B\u0438\u0442\u0435 \u044D\u043B\u0435\u043C\u0435\u043D\u0442\u044B.");
+      return;
     }
+    this.clipboard = selected.map((el) => JSON.parse(JSON.stringify(el)));
+    new import_obsidian3.Notice(`\u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u043E: ${this.clipboard.length}`);
   }
-  /** Двойной тап кнопкой: тумблер перо ⇄ ластик. */
-  toggleEraser() {
-    var _a, _b, _c;
+  /** Удержание/команда: вставить буфер у кончика пера с новыми id и выделить вставленное. */
+  pasteClipboard(ctx) {
+    var _a, _b, _c, _d, _e, _f;
+    if (!((_a = this.clipboard) == null ? void 0 : _a.length)) {
+      new import_obsidian3.Notice("\u0411\u0443\u0444\u0435\u0440 \u043F\u0443\u0441\u0442 \u2014 \u0441\u043D\u0430\u0447\u0430\u043B\u0430 \u0441\u043A\u043E\u043F\u0438\u0440\u0443\u0439\u0442\u0435 (\u0434\u0432\u043E\u0439\u043D\u043E\u0439 \u0442\u0430\u043F \u043A\u043D\u043E\u043F\u043A\u043E\u0439).");
+      return;
+    }
+    const ea = getEA(this.app);
+    try {
+      (_b = ea == null ? void 0 : ea.setView) == null ? void 0 : _b.call(ea, "active");
+    } catch (e) {
+    }
     const api = getApi(this.app);
-    const cur = (_c = (_b = (_a = api == null ? void 0 : api.getAppState) == null ? void 0 : _a.call(api)) == null ? void 0 : _b.activeTool) == null ? void 0 : _c.type;
-    const next = cur === "eraser" ? "freedraw" : "eraser";
-    this.setTool(next);
-    new import_obsidian3.Notice(next === "eraser" ? "\u041B\u0430\u0441\u0442\u0438\u043A" : "\u041F\u0435\u0440\u043E");
-  }
-  /** Удержание кнопки: меню инструментов у кончика пера. «Рука» двигает холст вместо рисования. */
-  openToolMenu(ctx) {
-    const tools = [
-      ["\u270E  \u041F\u0435\u0440\u043E", "freedraw"],
-      ["\u232B  \u041B\u0430\u0441\u0442\u0438\u043A", "eraser"],
-      ["\u2922  \u0412\u044B\u0434\u0435\u043B\u0435\u043D\u0438\u0435", "selection"],
-      ["\u270B  \u0420\u0443\u043A\u0430 (\u0434\u0432\u0438\u0433\u0430\u0442\u044C \u0445\u043E\u043B\u0441\u0442)", "hand"],
-      ["\u25AD  \u041F\u0440\u044F\u043C\u043E\u0443\u0433\u043E\u043B\u044C\u043D\u0438\u043A", "rectangle"],
-      ["\u25EF  \u042D\u043B\u043B\u0438\u043F\u0441", "ellipse"],
-      ["\u2192  \u0421\u0442\u0440\u0435\u043B\u043A\u0430", "arrow"],
-      ["\uFF0F  \u041B\u0438\u043D\u0438\u044F", "line"],
-      ["T  \u0422\u0435\u043A\u0441\u0442", "text"]
-    ];
-    const items = tools.map(([label, type]) => ({
-      label,
-      onClick: () => this.setTool(type)
+    if (!(api == null ? void 0 : api.updateScene)) {
+      new import_obsidian3.Notice("\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0445\u043E\u043B\u0441\u0442 Excalidraw \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D.");
+      return;
+    }
+    const idMap = /* @__PURE__ */ new Map();
+    const groupMap = /* @__PURE__ */ new Map();
+    for (const el of this.clipboard) idMap.set(el.id, genId());
+    const minX = Math.min(...this.clipboard.map((e) => {
+      var _a2;
+      return (_a2 = e.x) != null ? _a2 : 0;
     }));
-    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+    const minY = Math.min(...this.clipboard.map((e) => {
+      var _a2;
+      return (_a2 = e.y) != null ? _a2 : 0;
+    }));
+    const { x: penX, y: penY } = this.toScene(api, ctx.clientX, ctx.clientY);
+    const dx = penX - minX;
+    const dy = penY - minY;
+    const remapId = (id) => {
+      var _a2;
+      return (_a2 = idMap.get(id)) != null ? _a2 : id;
+    };
+    const clones = this.clipboard.map((src) => {
+      var _a2, _b2, _c2, _d2;
+      const el = JSON.parse(JSON.stringify(src));
+      el.id = idMap.get(src.id);
+      el.x = ((_a2 = src.x) != null ? _a2 : 0) + dx;
+      el.y = ((_b2 = src.y) != null ? _b2 : 0) + dy;
+      el.seed = Math.random() * 2 ** 31 | 0;
+      el.versionNonce = Math.random() * 2 ** 31 | 0;
+      el.version = ((_c2 = src.version) != null ? _c2 : 1) + 1;
+      el.updated = Date.now();
+      if (Array.isArray(el.groupIds)) {
+        el.groupIds = el.groupIds.map((g) => {
+          if (!groupMap.has(g)) groupMap.set(g, genId());
+          return groupMap.get(g);
+        });
+      }
+      if (el.containerId) el.containerId = idMap.has(el.containerId) ? remapId(el.containerId) : null;
+      if (Array.isArray(el.boundElements)) {
+        el.boundElements = el.boundElements.filter((b) => b && idMap.has(b.id)).map((b) => ({ ...b, id: remapId(b.id) }));
+      }
+      for (const k of ["startBinding", "endBinding"]) {
+        if ((_d2 = el[k]) == null ? void 0 : _d2.elementId) {
+          if (idMap.has(el[k].elementId)) el[k] = { ...el[k], elementId: remapId(el[k].elementId) };
+          else el[k] = null;
+        }
+      }
+      return el;
+    });
+    const current = ((_d = (_c = api.getSceneElements) == null ? void 0 : _c.call(api)) != null ? _d : []).filter((e) => e && !e.isDeleted);
+    const selectedElementIds = {};
+    for (const c of clones) selectedElementIds[c.id] = true;
+    try {
+      api.updateScene({
+        elements: [...current, ...clones],
+        appState: { ...(_f = (_e = api.getAppState) == null ? void 0 : _e.call(api)) != null ? _f : {}, selectedElementIds },
+        commitToHistory: true
+      });
+      new import_obsidian3.Notice(`\u0412\u0441\u0442\u0430\u0432\u043B\u0435\u043D\u043E: ${clones.length}`);
+    } catch (err) {
+      console.error("[excalidraw-stylus-menu] paste failed", err);
+      new import_obsidian3.Notice("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0432\u0441\u0442\u0430\u0432\u0438\u0442\u044C.");
+    }
   }
   /* ---------- диагностика стилуса ---------- */
   refreshDebugOverlay() {
@@ -953,7 +1027,7 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian3.Setting(containerEl).setName("\u0416\u0435\u0441\u0442-\u0442\u0440\u0438\u0433\u0433\u0435\u0440").setDesc("\u0427\u0435\u043C \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0442\u044C \u043C\u0435\u043D\u044E \u0432\u0441\u0442\u0430\u0432\u043A\u0438 \u043F\u0435\u0440\u043E\u043C.").addDropdown(
-      (d) => d.addOption("penbutton", "\u041A\u043D\u043E\u043F\u043A\u0430 S Pen \u043F\u0440\u0438 \u043F\u0430\u0440\u0435\u043D\u0438\u0438 (\u0442\u0430\u043F\u2192\u043C\u0435\u043D\u044E, 2\xD7\u2192\u043F\u0435\u0440\u043E/\u043B\u0430\u0441\u0442\u0438\u043A, \u0443\u0434\u0435\u0440\u0436.\u2192\u0438\u043D\u0441\u0442\u0440\u0443\u043C\u0435\u043D\u0442\u044B)").addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435 (barrel)").setValue(this.plugin.settings.trigger).onChange(async (v) => {
+      (d) => d.addOption("penbutton", "\u041A\u043D\u043E\u043F\u043A\u0430 S Pen \u043F\u0440\u0438 \u043F\u0430\u0440\u0435\u043D\u0438\u0438 (\u0442\u0430\u043F\u2192\u043C\u0435\u043D\u044E, 2\xD7\u2192\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C, \u0443\u0434\u0435\u0440\u0436.\u2192\u0432\u0441\u0442\u0430\u0432\u0438\u0442\u044C)").addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435 (barrel)").setValue(this.plugin.settings.trigger).onChange(async (v) => {
         this.plugin.settings.trigger = v;
         await this.plugin.saveSettings();
       })

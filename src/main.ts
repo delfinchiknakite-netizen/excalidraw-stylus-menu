@@ -29,6 +29,14 @@ function getApi(app: App): any | null {
   }
 }
 
+/** Случайный id в стиле Excalidraw (nanoid-подобный) для вставляемых клонов. */
+function genId(): string {
+  const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-";
+  let s = "";
+  for (let i = 0; i < 21; i++) s += chars[(Math.random() * chars.length) | 0];
+  return s;
+}
+
 function hasBBox(el: any): boolean {
   return (
     el &&
@@ -50,6 +58,8 @@ export default class StylusMenuPlugin extends Plugin {
   private diagHandlers: Array<[string, (e: any) => void]> | null = null;
   private diagLines: string[] = [];
   private lastMoveSig = "";
+  /** Внутренний буфер копирования: глубокие копии скопированных элементов сцены. */
+  private clipboard: any[] | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -63,6 +73,24 @@ export default class StylusMenuPlugin extends Plugin {
       id: "open-insert-menu",
       name: "Открыть меню вставки (стилус)",
       callback: () => this.openMenuAtLastPointer(),
+    });
+
+    this.addCommand({
+      id: "copy-selection",
+      name: "Копировать выделенное (стилус)",
+      callback: () => this.copySelection(),
+    });
+
+    this.addCommand({
+      id: "paste-clipboard",
+      name: "Вставить (стилус)",
+      callback: () =>
+        this.pasteClipboard(
+          this.lastPointer ?? {
+            clientX: window.innerWidth / 2,
+            clientY: window.innerHeight / 2,
+          },
+        ),
     });
 
     this.addCommand({
@@ -108,8 +136,8 @@ export default class StylusMenuPlugin extends Plugin {
           this.lastPointer = { clientX: x, clientY: y };
         },
         (info) => this.logLine(info),
-        () => this.toggleEraser(),
-        (ctx) => this.openToolMenu(ctx),
+        () => this.copySelection(),
+        (ctx) => this.pasteClipboard(ctx),
       );
       watcher.attach();
       this.watchers.set(el, watcher);
@@ -277,59 +305,103 @@ export default class StylusMenuPlugin extends Plugin {
     new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
   }
 
-  /* ---------- инструменты (жесты кнопкой при парении) ---------- */
+  /* ---------- копировать / вставить (жесты кнопкой при парении) ---------- */
 
-  /** Выбрать активный инструмент Excalidraw (надёжно, через API). */
-  private setTool(type: string): void {
-    const ea = getEA(this.app);
-    if (!ea) {
-      new Notice("Excalidraw не найден — включите плагин Excalidraw.");
+  /** Двойной тап кнопкой: скопировать выделенные элементы во внутренний буфер плагина. */
+  private copySelection(): void {
+    const api = getApi(this.app);
+    if (!api?.getSceneElements) {
+      new Notice("Активный холст Excalidraw не найден.");
       return;
     }
+    const st = api.getAppState?.() ?? {};
+    const sel = st.selectedElementIds ?? {};
+    const selected = (api.getSceneElements() ?? []).filter(
+      (el: any) => el && !el.isDeleted && sel[el.id],
+    );
+    if (!selected.length) {
+      new Notice("Нечего копировать — выделите элементы.");
+      return;
+    }
+    // Глубокая копия, чтобы последующие правки сцены не меняли буфер.
+    this.clipboard = selected.map((el: any) => JSON.parse(JSON.stringify(el)));
+    new Notice(`Скопировано: ${this.clipboard.length}`);
+  }
+
+  /** Удержание/команда: вставить буфер у кончика пера с новыми id и выделить вставленное. */
+  private pasteClipboard(ctx: TriggerCtx): void {
+    if (!this.clipboard?.length) {
+      new Notice("Буфер пуст — сначала скопируйте (двойной тап кнопкой).");
+      return;
+    }
+    const ea = getEA(this.app);
     try {
-      ea.setView("active");
+      ea?.setView?.("active");
     } catch {
       /* ignore */
     }
     const api = getApi(this.app);
-    if (!api?.setActiveTool) {
+    if (!api?.updateScene) {
       new Notice("Активный холст Excalidraw не найден.");
       return;
     }
+
+    // Новые id для элементов и групп + перенастройка связей внутри вставляемого набора.
+    const idMap = new Map<string, string>();
+    const groupMap = new Map<string, string>();
+    for (const el of this.clipboard) idMap.set(el.id, genId());
+
+    const minX = Math.min(...this.clipboard.map((e: any) => e.x ?? 0));
+    const minY = Math.min(...this.clipboard.map((e: any) => e.y ?? 0));
+    const { x: penX, y: penY } = this.toScene(api, ctx.clientX, ctx.clientY);
+    const dx = penX - minX;
+    const dy = penY - minY;
+
+    const remapId = (id: string) => idMap.get(id) ?? id;
+    const clones = this.clipboard.map((src: any) => {
+      const el = JSON.parse(JSON.stringify(src));
+      el.id = idMap.get(src.id);
+      el.x = (src.x ?? 0) + dx;
+      el.y = (src.y ?? 0) + dy;
+      el.seed = (Math.random() * 2 ** 31) | 0;
+      el.versionNonce = (Math.random() * 2 ** 31) | 0;
+      el.version = (src.version ?? 1) + 1;
+      el.updated = Date.now();
+      if (Array.isArray(el.groupIds)) {
+        el.groupIds = el.groupIds.map((g: string) => {
+          if (!groupMap.has(g)) groupMap.set(g, genId());
+          return groupMap.get(g);
+        });
+      }
+      if (el.containerId) el.containerId = idMap.has(el.containerId) ? remapId(el.containerId) : null;
+      if (Array.isArray(el.boundElements)) {
+        el.boundElements = el.boundElements
+          .filter((b: any) => b && idMap.has(b.id))
+          .map((b: any) => ({ ...b, id: remapId(b.id) }));
+      }
+      for (const k of ["startBinding", "endBinding"] as const) {
+        if (el[k]?.elementId) {
+          if (idMap.has(el[k].elementId)) el[k] = { ...el[k], elementId: remapId(el[k].elementId) };
+          else el[k] = null;
+        }
+      }
+      return el;
+    });
+
+    const current = (api.getSceneElements?.() ?? []).filter((e: any) => e && !e.isDeleted);
+    const selectedElementIds: Record<string, true> = {};
+    for (const c of clones) selectedElementIds[c.id] = true;
     try {
-      api.setActiveTool({ type });
+      api.updateScene({
+        elements: [...current, ...clones],
+        appState: { ...(api.getAppState?.() ?? {}), selectedElementIds },
+        commitToHistory: true,
+      });
+      new Notice(`Вставлено: ${clones.length}`);
     } catch (err) {
-      console.error("[excalidraw-stylus-menu] setActiveTool failed", err);
+      console.error("[excalidraw-stylus-menu] paste failed", err);
+      new Notice("Не удалось вставить.");
     }
-  }
-
-  /** Двойной тап кнопкой: тумблер перо ⇄ ластик. */
-  private toggleEraser(): void {
-    const api = getApi(this.app);
-    const cur = api?.getAppState?.()?.activeTool?.type;
-    const next = cur === "eraser" ? "freedraw" : "eraser";
-    this.setTool(next);
-    new Notice(next === "eraser" ? "Ластик" : "Перо");
-  }
-
-  /** Удержание кнопки: меню инструментов у кончика пера. «Рука» двигает холст вместо рисования. */
-  private openToolMenu(ctx: TriggerCtx): void {
-    const tools: Array<[string, string]> = [
-      ["✎  Перо", "freedraw"],
-      ["⌫  Ластик", "eraser"],
-      ["⤢  Выделение", "selection"],
-      ["✋  Рука (двигать холст)", "hand"],
-      ["▭  Прямоугольник", "rectangle"],
-      ["◯  Эллипс", "ellipse"],
-      ["→  Стрелка", "arrow"],
-      ["／  Линия", "line"],
-      ["T  Текст", "text"],
-    ];
-    const items: MenuItem[] = tools.map(([label, type]) => ({
-      label,
-      onClick: () => this.setTool(type),
-    }));
-    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
   }
 
   /* ---------- диагностика стилуса ---------- */
@@ -450,7 +522,7 @@ class StylusMenuSettingTab extends PluginSettingTab {
       .setDesc("Чем открывать меню вставки пером.")
       .addDropdown((d) =>
         d
-          .addOption("penbutton", "Кнопка S Pen при парении (тап→меню, 2×→перо/ластик, удерж.→инструменты)")
+          .addOption("penbutton", "Кнопка S Pen при парении (тап→меню, 2×→копировать, удерж.→вставить)")
           .addOption("tapempty", "Касание пером по пустому месту")
           .addOption("longpress", "Долгое нажатие пером")
           .addOption("doubletap", "Двойное касание пером")
