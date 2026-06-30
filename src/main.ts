@@ -253,6 +253,8 @@ export default class StylusMenuPlugin extends Plugin {
       cancelable: true,
     });
     target.dispatchEvent(ev);
+    // Если перо при свайпе оставило штрих — убрать его (снимок снят на pointerdown).
+    this.scheduleCleanup();
   }
 
   /** Открыть меню по команде/хоткею: в последней позиции пера или в центре экрана. */
@@ -419,7 +421,7 @@ class StylusMenuSettingTab extends PluginSettingTab {
       .setDesc("Чем открывать меню вставки пером.")
       .addDropdown((d) =>
         d
-          .addOption("penbutton", "Боковая кнопка S Pen при парении (тап→меню, свайп→undo/redo)")
+          .addOption("penbutton", "Кнопка S Pen: меню (парение) + свайп с касанием (undo/redo)")
           .addOption("tapempty", "Касание пером по пустому месту")
           .addOption("longpress", "Долгое нажатие пером")
           .addOption("doubletap", "Двойное касание пером")
@@ -449,7 +451,7 @@ class StylusMenuSettingTab extends PluginSettingTab {
     );
     this.numberField(
       "Свайп кнопкой (undo/redo), px",
-      "Парение с зажатой кнопкой: свайп вправо → redo, влево → undo. Меньше — чувствительнее.",
+      "Касание с зажатой кнопкой: свайп вправо → redo, влево → undo. Меньше — чувствительнее.",
       () => this.plugin.settings.penSwipeMinPx,
       (n) => (this.plugin.settings.penSwipeMinPx = n),
     );

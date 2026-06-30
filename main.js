@@ -62,12 +62,17 @@ var PointerWatcher = class {
     this.suppressContext = false;
     /** Перо в контакте с полотном (после pointerdown с buttons&1). */
     this.penDown = false;
-    /** Боковая кнопка зажата во время ПАРЕНИЯ (без касания). */
+    /** Парение: боковая кнопка зажата (для открытия меню по отпусканию). */
     this.penBtnActive = false;
-    /** Свайп уже распознан в этом нажатии кнопки — не открывать меню и не дублировать. */
-    this.penBtnConsumed = false;
     this.penBtnStartX = 0;
     this.penBtnStartY = 0;
+    /** Касание: старт и текущая точка (для распознавания свайпа undo/redo). */
+    this.contactStartX = 0;
+    this.contactStartY = 0;
+    this.contactCurX = 0;
+    this.contactCurY = 0;
+    /** В этом касании была нажата боковая кнопка (видели contextmenu type=pen). */
+    this.contactButtonSeen = false;
     /** Время последнего срабатывания penbutton (антидребезг). */
     this.lastPenButtonFire = 0;
     this.down = (e) => {
@@ -83,6 +88,14 @@ var PointerWatcher = class {
       this.onPointer(e.clientX, e.clientY);
       if (!this.onDrawSurface(e)) return;
       if (s.trigger === "penbutton") {
+        if (e.buttons & 1) {
+          this.contactStartX = e.clientX;
+          this.contactStartY = e.clientY;
+          this.contactCurX = e.clientX;
+          this.contactCurY = e.clientY;
+          this.contactButtonSeen = false;
+          this.onArm();
+        }
         return;
       }
       if (s.trigger === "tapempty") {
@@ -130,28 +143,19 @@ var PointerWatcher = class {
       const s = this.getSettings();
       if (s.trigger === "penbutton" && e.pointerType === "pen") {
         const pressed = !!(e.buttons & 1);
-        if (pressed && !this.penDown) {
-          if (!this.penBtnActive) {
-            this.penBtnActive = true;
-            this.penBtnConsumed = false;
-            this.penBtnStartX = e.clientX;
-            this.penBtnStartY = e.clientY;
-          } else if (!this.penBtnConsumed) {
-            const dx = e.clientX - this.penBtnStartX;
-            const dy = e.clientY - this.penBtnStartY;
-            if (Math.abs(dx) >= s.penSwipeMinPx && Math.abs(dx) > Math.abs(dy)) {
-              this.penBtnConsumed = true;
-              this.firePenButton(e, () => this.onSwipe(dx > 0 ? "redo" : "undo"));
-            }
-          }
+        if (this.penDown) {
+          this.contactCurX = e.clientX;
+          this.contactCurY = e.clientY;
+        } else if (pressed && !this.penBtnActive) {
+          this.penBtnActive = true;
+          this.penBtnStartX = e.clientX;
+          this.penBtnStartY = e.clientY;
         } else if (this.penBtnActive && !pressed) {
           this.penBtnActive = false;
-          if (!this.penBtnConsumed) {
-            this.firePenButton(
-              e,
-              () => this.onTrigger({ clientX: this.penBtnStartX, clientY: this.penBtnStartY })
-            );
-          }
+          this.firePenButton(
+            e,
+            () => this.onTrigger({ clientX: this.penBtnStartX, clientY: this.penBtnStartY })
+          );
         }
       }
       const thr = s.moveThresholdPx;
@@ -164,9 +168,21 @@ var PointerWatcher = class {
         if (dist > thr) this.clearTimer();
       }
     };
-    this.up = () => {
+    this.up = (e) => {
       this.clearTimer();
       this.penDown = false;
+      const s = this.getSettings();
+      if (s.trigger === "penbutton") {
+        if (this.contactButtonSeen) {
+          const dx = this.contactCurX - this.contactStartX;
+          const dy = this.contactCurY - this.contactStartY;
+          if (Math.abs(dx) >= s.penSwipeMinPx && Math.abs(dx) > Math.abs(dy)) {
+            this.firePenButton(e, () => this.onSwipe(dx > 0 ? "redo" : "undo"));
+          }
+        }
+        this.contactButtonSeen = false;
+        return;
+      }
       if (this.armed) {
         const wasTap = !this.moved;
         this.armed = false;
@@ -177,12 +193,13 @@ var PointerWatcher = class {
       this.clearTimer();
       this.penDown = false;
       this.penBtnActive = false;
-      this.penBtnConsumed = false;
+      this.contactButtonSeen = false;
       this.armed = false;
     };
     this.ctx = (e) => {
       const s = this.getSettings();
       if (s.trigger === "penbutton" && e.pointerType === "pen") {
+        this.contactButtonSeen = true;
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -740,6 +757,7 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       cancelable: true
     });
     target.dispatchEvent(ev);
+    this.scheduleCleanup();
   }
   /** Открыть меню по команде/хоткею: в последней позиции пера или в центре экрана. */
   openMenuAtLastPointer() {
@@ -879,7 +897,7 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian3.Setting(containerEl).setName("\u0416\u0435\u0441\u0442-\u0442\u0440\u0438\u0433\u0433\u0435\u0440").setDesc("\u0427\u0435\u043C \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0442\u044C \u043C\u0435\u043D\u044E \u0432\u0441\u0442\u0430\u0432\u043A\u0438 \u043F\u0435\u0440\u043E\u043C.").addDropdown(
-      (d) => d.addOption("penbutton", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen \u043F\u0440\u0438 \u043F\u0430\u0440\u0435\u043D\u0438\u0438 (\u0442\u0430\u043F\u2192\u043C\u0435\u043D\u044E, \u0441\u0432\u0430\u0439\u043F\u2192undo/redo)").addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435 (barrel)").setValue(this.plugin.settings.trigger).onChange(async (v) => {
+      (d) => d.addOption("penbutton", "\u041A\u043D\u043E\u043F\u043A\u0430 S Pen: \u043C\u0435\u043D\u044E (\u043F\u0430\u0440\u0435\u043D\u0438\u0435) + \u0441\u0432\u0430\u0439\u043F \u0441 \u043A\u0430\u0441\u0430\u043D\u0438\u0435\u043C (undo/redo)").addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435 (barrel)").setValue(this.plugin.settings.trigger).onChange(async (v) => {
         this.plugin.settings.trigger = v;
         await this.plugin.saveSettings();
       })
@@ -898,7 +916,7 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
     );
     this.numberField(
       "\u0421\u0432\u0430\u0439\u043F \u043A\u043D\u043E\u043F\u043A\u043E\u0439 (undo/redo), px",
-      "\u041F\u0430\u0440\u0435\u043D\u0438\u0435 \u0441 \u0437\u0430\u0436\u0430\u0442\u043E\u0439 \u043A\u043D\u043E\u043F\u043A\u043E\u0439: \u0441\u0432\u0430\u0439\u043F \u0432\u043F\u0440\u0430\u0432\u043E \u2192 redo, \u0432\u043B\u0435\u0432\u043E \u2192 undo. \u041C\u0435\u043D\u044C\u0448\u0435 \u2014 \u0447\u0443\u0432\u0441\u0442\u0432\u0438\u0442\u0435\u043B\u044C\u043D\u0435\u0435.",
+      "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u0441 \u0437\u0430\u0436\u0430\u0442\u043E\u0439 \u043A\u043D\u043E\u043F\u043A\u043E\u0439: \u0441\u0432\u0430\u0439\u043F \u0432\u043F\u0440\u0430\u0432\u043E \u2192 redo, \u0432\u043B\u0435\u0432\u043E \u2192 undo. \u041C\u0435\u043D\u044C\u0448\u0435 \u2014 \u0447\u0443\u0432\u0441\u0442\u0432\u0438\u0442\u0435\u043B\u044C\u043D\u0435\u0435.",
       () => this.plugin.settings.penSwipeMinPx,
       (n) => this.plugin.settings.penSwipeMinPx = n
     );
