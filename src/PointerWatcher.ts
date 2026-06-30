@@ -9,7 +9,6 @@ type Trigger = (ctx: TriggerCtx) => void;
 type Arm = () => void;
 type Pointer = (clientX: number, clientY: number) => void;
 type Debug = (info: string) => void;
-type Swipe = (dir: "undo" | "redo") => void;
 
 /**
  * Слушает pointer-события на элементе вью Excalidraw в capture-фазе (чтобы
@@ -40,13 +39,6 @@ export class PointerWatcher {
   private penBtnActive = false;
   private penBtnStartX = 0;
   private penBtnStartY = 0;
-  /** Касание: старт и текущая точка (для распознавания свайпа undo/redo). */
-  private contactStartX = 0;
-  private contactStartY = 0;
-  private contactCurX = 0;
-  private contactCurY = 0;
-  /** В этом касании была нажата боковая кнопка (видели contextmenu type=pen). */
-  private contactButtonSeen = false;
   /** Время последнего срабатывания penbutton (антидребезг). */
   private lastPenButtonFire = 0;
 
@@ -57,7 +49,6 @@ export class PointerWatcher {
     private onArm: Arm,
     private onPointer: Pointer,
     private onDebug: Debug,
-    private onSwipe: Swipe,
   ) {}
 
   attach(): void {
@@ -106,16 +97,9 @@ export class PointerWatcher {
     if (!this.onDrawSurface(e)) return; // не трогаем кнопки/панели Excalidraw
 
     if (s.trigger === "penbutton") {
-      if (e.buttons & 1) {
-        // Касание: запоминаем старт — свайп с кнопкой распознаём в up (см. ctx/up).
-        this.contactStartX = e.clientX;
-        this.contactStartY = e.clientY;
-        this.contactCurX = e.clientX;
-        this.contactCurY = e.clientY;
-        this.contactButtonSeen = false;
-        this.onArm(); // снимок сцены — на случай штриха от пера
-      }
-      return; // меню при парении и свайп при касании распознаём в move/up
+      // Меню открываем только при ПАРЕНИИ (см. move). Касание — обычное рисование
+      // Excalidraw; кнопку при касании только гасим в contextmenu (см. ctx).
+      return;
     }
 
     if (s.trigger === "tapempty") {
@@ -166,14 +150,11 @@ export class PointerWatcher {
     if (this.penLike(e)) this.onPointer(e.clientX, e.clientY);
     const s = this.getSettings();
 
-    // penbutton: при КАСАНИИ копим траекторию (свайп → undo/redo, классифицируется в up);
-    // при ПАРЕНИИ кнопка приходит как buttons&1 — тап кнопкой по отпусканию открывает меню.
-    if (s.trigger === "penbutton" && e.pointerType === "pen") {
+    // penbutton: кнопка во время ПАРЕНИЯ (без касания) приходит как buttons&1.
+    // Нажать-отпустить кнопку, наведя перо над холстом → меню в точке нажатия.
+    if (s.trigger === "penbutton" && e.pointerType === "pen" && !this.penDown) {
       const pressed = !!(e.buttons & 1);
-      if (this.penDown) {
-        this.contactCurX = e.clientX;
-        this.contactCurY = e.clientY;
-      } else if (pressed && !this.penBtnActive) {
+      if (pressed && !this.penBtnActive) {
         this.penBtnActive = true;
         this.penBtnStartX = e.clientX;
         this.penBtnStartY = e.clientY;
@@ -196,22 +177,9 @@ export class PointerWatcher {
     }
   };
 
-  private up = (e: PointerEvent): void => {
+  private up = (): void => {
     this.clearTimer();
     this.penDown = false;
-    const s = this.getSettings();
-    if (s.trigger === "penbutton") {
-      // Касание с зажатой кнопкой (видели contextmenu) + горизонтальный свайп → undo/redo.
-      if (this.contactButtonSeen) {
-        const dx = this.contactCurX - this.contactStartX;
-        const dy = this.contactCurY - this.contactStartY;
-        if (Math.abs(dx) >= s.penSwipeMinPx && Math.abs(dx) > Math.abs(dy)) {
-          this.firePenButton(e, () => this.onSwipe(dx > 0 ? "redo" : "undo"));
-        }
-      }
-      this.contactButtonSeen = false;
-      return;
-    }
     if (this.armed) {
       const wasTap = !this.moved;
       this.armed = false;
@@ -223,16 +191,15 @@ export class PointerWatcher {
     this.clearTimer();
     this.penDown = false;
     this.penBtnActive = false;
-    this.contactButtonSeen = false;
     this.armed = false;
   };
 
   private ctx = (e: Event): void => {
     // penbutton: кнопка S Pen в момент КАСАНИЯ приходит как contextmenu type=pen.
-    // Помечаем, что кнопка нажата (свайп распознаём в up), и гасим родное контекстное меню.
+    // Меню по ней НЕ открываем (только при парении) — лишь гасим родное контекстное меню,
+    // чтобы оно не мешало рисованию пером.
     const s = this.getSettings();
     if (s.trigger === "penbutton" && (e as PointerEvent).pointerType === "pen") {
-      this.contactButtonSeen = true;
       e.preventDefault();
       e.stopPropagation();
       return;
