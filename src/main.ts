@@ -3,9 +3,11 @@ import { DEFAULT_SETTINGS, StylusMenuSettings, TriggerGesture } from "./settings
 import { PointerWatcher, TriggerCtx } from "./PointerWatcher";
 import { InsertMenu, MenuItem } from "./InsertMenu";
 import { insertEmbedOrImage, insertShape, insertSticker, insertText } from "./inserters";
-import { ConnectorController } from "./connector";
+import { ConnectorController, contains, nearEdge } from "./connector";
 
 const EXCALIDRAW_VIEW = "excalidraw";
+const STRAY_TYPES = ["freedraw", "draw", "line", "arrow"];
+const STRAY_MAX_PX = 12;
 
 /** Доступ к ExcalidrawAutomate из плагина Excalidraw. */
 export function getEA(app: App): any | null {
@@ -15,6 +17,16 @@ export function getEA(app: App): any | null {
     (app as any).plugins?.plugins?.["obsidian-excalidraw-plugin"]?.ea ??
     null
   );
+}
+
+function getApi(app: App): any | null {
+  const ea = getEA(app);
+  if (!ea) return null;
+  try {
+    return ea.getExcalidrawAPI();
+  } catch {
+    return null;
+  }
 }
 
 function hasBBox(el: any): boolean {
@@ -32,6 +44,8 @@ export default class StylusMenuPlugin extends Plugin {
   private watchers = new Map<HTMLElement, PointerWatcher>();
   private debugEl: HTMLElement | null = null;
   private connector = new ConnectorController();
+  private snapshot: Set<string> | null = null;
+  private snapApi: any = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -78,6 +92,7 @@ export default class StylusMenuPlugin extends Plugin {
         el,
         () => this.settings,
         (ctx) => this.onTrigger(ctx),
+        () => this.snapshotScene(),
         (info) => this.updateDebug(info),
       );
       watcher.attach();
@@ -85,9 +100,59 @@ export default class StylusMenuPlugin extends Plugin {
     }
   }
 
+  /** Снимок id элементов сцены до начала жеста (для удаления артефактной точки). */
+  private snapshotScene(): void {
+    if (!this.settings.cleanupStrayDot) return;
+    const api = getApi(this.app);
+    if (!api) return;
+    try {
+      const els = api.getSceneElements?.() ?? [];
+      this.snapshot = new Set(els.filter((e: any) => !e.isDeleted).map((e: any) => e.id));
+      this.snapApi = api;
+    } catch {
+      this.snapshot = null;
+      this.snapApi = null;
+    }
+  }
+
+  private clearSnapshot(): void {
+    this.snapshot = null;
+    this.snapApi = null;
+  }
+
+  /** Через короткую задержку удаляет крошечный штрих, случайно созданный пером при тапе. */
+  private scheduleCleanup(): void {
+    const snap = this.snapshot;
+    const api = this.snapApi;
+    this.clearSnapshot();
+    if (!snap || !api) return;
+    window.setTimeout(() => {
+      try {
+        const cur = api.getSceneElements?.() ?? [];
+        const strays = cur.filter(
+          (e: any) =>
+            !e.isDeleted &&
+            !snap.has(e.id) &&
+            STRAY_TYPES.includes(e.type) &&
+            Math.max(e.width || 0, e.height || 0) < STRAY_MAX_PX,
+        );
+        if (strays.length) {
+          const ids = new Set(strays.map((e: any) => e.id));
+          api.updateScene({
+            elements: cur.filter((e: any) => !ids.has(e.id)),
+            commitToHistory: false,
+          });
+        }
+      } catch (err) {
+        console.error("[excalidraw-stylus-menu] cleanup failed", err);
+      }
+    }, 80);
+  }
+
   private onTrigger(ctx: TriggerCtx): void {
     const ea = getEA(this.app);
     if (!ea) {
+      this.clearSnapshot();
       new Notice("Excalidraw не найден — включите плагин Excalidraw.");
       return;
     }
@@ -97,13 +162,9 @@ export default class StylusMenuPlugin extends Plugin {
       /* ignore */
     }
 
-    let api: any = null;
-    try {
-      api = ea.getExcalidrawAPI();
-    } catch {
-      api = null;
-    }
+    const api = getApi(this.app);
     if (!api) {
+      this.clearSnapshot();
       new Notice("Активный холст Excalidraw не найден.");
       return;
     }
@@ -117,7 +178,19 @@ export default class StylusMenuPlugin extends Plugin {
       (el: any) => el && !el.isDeleted && hasBBox(el),
     );
 
-    // Сначала пытаемся обработать как коннектор (касание у края блока).
+    const margin = this.settings.edgeMarginPx;
+    const onEdge = elements.some((el: any) => nearEdge(sceneX, sceneY, el, margin));
+
+    // tapempty: тап по объекту (не по краю) — отдаём обычному поведению Excalidraw.
+    if (this.settings.trigger === "tapempty" && !onEdge) {
+      const onObject = elements.some((el: any) => contains(sceneX, sceneY, el, 0));
+      if (onObject) {
+        this.clearSnapshot();
+        return;
+      }
+    }
+
+    // Край блока → режим коннектора; иначе откроем меню.
     const handled = this.connector.handleTrigger({
       ea,
       api,
@@ -126,9 +199,13 @@ export default class StylusMenuPlugin extends Plugin {
       elements,
       settings: this.settings,
     });
-    if (handled) return;
+    if (handled) {
+      this.scheduleCleanup();
+      return;
+    }
 
     this.openInsertMenu(ctx, ea, sceneX, sceneY);
+    this.scheduleCleanup();
   }
 
   private openInsertMenu(ctx: TriggerCtx, ea: any, x: number, y: number): void {
@@ -221,9 +298,10 @@ class StylusMenuSettingTab extends PluginSettingTab {
       .setDesc("Чем открывать меню вставки пером.")
       .addDropdown((d) =>
         d
-          .addOption("barrel", "Боковая кнопка S Pen + касание")
+          .addOption("tapempty", "Касание пером по пустому месту")
           .addOption("longpress", "Долгое нажатие пером")
           .addOption("doubletap", "Двойное касание пером")
+          .addOption("barrel", "Боковая кнопка S Pen + касание")
           .setValue(this.plugin.settings.trigger)
           .onChange(async (v) => {
             this.plugin.settings.trigger = v as TriggerGesture;
@@ -231,6 +309,24 @@ class StylusMenuSettingTab extends PluginSettingTab {
           }),
       );
 
+    new Setting(containerEl)
+      .setName("Убирать случайную точку")
+      .setDesc(
+        "Если активен карандаш, тап пером может оставить точку — удалять её автоматически.",
+      )
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.cleanupStrayDot).onChange(async (v) => {
+          this.plugin.settings.cleanupStrayDot = v;
+          await this.plugin.saveSettings();
+        }),
+      );
+
+    this.numberField(
+      "Порог движения (тап), px",
+      "Если перо сдвинулось больше — это рисование, а не тап.",
+      () => this.plugin.settings.moveThresholdPx,
+      (n) => (this.plugin.settings.moveThresholdPx = n),
+    );
     this.numberField(
       "Долгое нажатие, мс",
       "Для жеста «долгое нажатие пером».",
@@ -264,9 +360,7 @@ class StylusMenuSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Debug-оверлей")
-      .setDesc(
-        "Показывать pointerType и buttons последнего касания — проверить, отдаёт ли S Pen боковую кнопку (ожидается buttons=3).",
-      )
+      .setDesc("Показывать pointerType и buttons последнего касания (диагностика пера).")
       .addToggle((t) =>
         t.setValue(this.plugin.settings.debugOverlay).onChange(async (v) => {
           this.plugin.settings.debugOverlay = v;

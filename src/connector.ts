@@ -19,7 +19,7 @@ export interface ConnectorInput {
 }
 
 /** Точка в зоне ±margin от рамки блока (рядом с границей, снаружи или внутри). */
-function nearEdge(px: number, py: number, el: El, margin: number): boolean {
+export function nearEdge(px: number, py: number, el: El, margin: number): boolean {
   const inOuter =
     px >= el.x - margin &&
     px <= el.x + el.width + margin &&
@@ -34,7 +34,7 @@ function nearEdge(px: number, py: number, el: El, margin: number): boolean {
 }
 
 /** Точка внутри блока (с небольшим допуском). */
-function contains(px: number, py: number, el: El, margin: number): boolean {
+export function contains(px: number, py: number, el: El, margin: number): boolean {
   return (
     px >= el.x - margin &&
     px <= el.x + el.width + margin &&

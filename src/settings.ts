@@ -1,4 +1,4 @@
-export type TriggerGesture = "barrel" | "longpress" | "doubletap";
+export type TriggerGesture = "tapempty" | "barrel" | "longpress" | "doubletap";
 
 export interface StylusMenuSettings {
   /** Жест, открывающий меню вставки. */
@@ -7,10 +7,12 @@ export interface StylusMenuSettings {
   longPressMs: number;
   /** Окно двойного касания, мс (для trigger="doubletap"). */
   doubleTapMs: number;
-  /** Допустимое движение пера, px, чтобы жест ещё считался "на месте". */
+  /** Допустимое движение пера, px, чтобы жест ещё считался "на месте" (тап, не штрих). */
   moveThresholdPx: number;
   /** Зона у рамки блока (в координатах сцены), считающаяся "краем" для коннектора. */
   edgeMarginPx: number;
+  /** Удалять случайную точку-артефакт, нарисованную пером при тапе (карандаш). */
+  cleanupStrayDot: boolean;
   /** Показывать debug-оверлей с pointerType/buttons. */
   debugOverlay: boolean;
   /** Размеры по умолчанию для прямоугольника/эллипса/линии/стрелки. */
@@ -22,11 +24,12 @@ export interface StylusMenuSettings {
 }
 
 export const DEFAULT_SETTINGS: StylusMenuSettings = {
-  trigger: "barrel",
+  trigger: "tapempty",
   longPressMs: 450,
   doubleTapMs: 300,
   moveThresholdPx: 8,
   edgeMarginPx: 16,
+  cleanupStrayDot: true,
   debugOverlay: false,
   defaultRectW: 160,
   defaultRectH: 100,

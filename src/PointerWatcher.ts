@@ -6,18 +6,28 @@ export interface TriggerCtx {
 }
 
 type Trigger = (ctx: TriggerCtx) => void;
+type Arm = () => void;
 type Debug = (info: string) => void;
 
 /**
  * Слушает pointer-события на элементе вью Excalidraw в capture-фазе (чтобы
  * опередить React-обработчики холста) и распознаёт настроенный жест-триггер.
+ *
  * Палец (pointerType="touch") никогда не перехватывается — он остаётся для
  * рисования и навигации. Перехватывается только перо (и мышь — для отладки на ПК).
+ *
+ * Режим "tapempty" (по умолчанию): не глушит событие — даёт Excalidraw рисовать.
+ * Если перо опустилось и поднялось без движения (тап), вызывает onTrigger; дальше
+ * плагин сам решает (по hit-test), открыть меню (пустое место), коннектор (край
+ * блока) или ничего (по объекту). Артефактная точка убирается отдельной очисткой.
+ * onArm вызывается на pointerdown — чтобы плагин снял снимок сцены ДО рисования.
  */
 export class PointerWatcher {
   private longPressTimer: number | null = null;
   private downX = 0;
   private downY = 0;
+  private moved = false;
+  private armed = false;
   private lastTapTime = 0;
   private lastTapX = 0;
   private lastTapY = 0;
@@ -27,6 +37,7 @@ export class PointerWatcher {
     private el: HTMLElement,
     private getSettings: () => StylusMenuSettings,
     private onTrigger: Trigger,
+    private onArm: Arm,
     private onDebug: Debug,
   ) {}
 
@@ -34,7 +45,7 @@ export class PointerWatcher {
     this.el.addEventListener("pointerdown", this.down, true);
     this.el.addEventListener("pointermove", this.move, true);
     this.el.addEventListener("pointerup", this.up, true);
-    this.el.addEventListener("pointercancel", this.up, true);
+    this.el.addEventListener("pointercancel", this.cancel, true);
     this.el.addEventListener("contextmenu", this.ctx, true);
   }
 
@@ -42,12 +53,12 @@ export class PointerWatcher {
     this.el.removeEventListener("pointerdown", this.down, true);
     this.el.removeEventListener("pointermove", this.move, true);
     this.el.removeEventListener("pointerup", this.up, true);
-    this.el.removeEventListener("pointercancel", this.up, true);
+    this.el.removeEventListener("pointercancel", this.cancel, true);
     this.el.removeEventListener("contextmenu", this.ctx, true);
     this.clearTimer();
   }
 
-  /** Перо или мышь (мышь — чтобы тестировать на ПК правой кнопкой). Палец игнорируем. */
+  /** Перо или мышь (мышь — чтобы тестировать на ПК). Палец игнорируем. */
   private penLike(e: PointerEvent): boolean {
     return e.pointerType === "pen" || e.pointerType === "mouse";
   }
@@ -59,16 +70,26 @@ export class PointerWatcher {
     }
     if (!this.penLike(e)) return;
 
+    if (s.trigger === "tapempty") {
+      if (!(e.buttons & 1)) return; // только контакт пера/ЛКМ
+      this.downX = e.clientX;
+      this.downY = e.clientY;
+      this.moved = false;
+      this.armed = true;
+      this.onArm(); // снимок сцены до того, как Excalidraw создаст точку
+      return; // НЕ preventDefault — обычное рисование продолжается
+    }
+
     if (s.trigger === "barrel") {
-      // Боковая кнопка S Pen = бит 2 в buttons (на ПК — правая кнопка мыши).
       if (e.buttons & 2) this.fire(e);
       return;
     }
 
     if (s.trigger === "longpress") {
-      if (!(e.buttons & 1)) return; // только контакт пера/ЛКМ
+      if (!(e.buttons & 1)) return;
       this.downX = e.clientX;
       this.downY = e.clientY;
+      this.onArm();
       this.clearTimer();
       this.longPressTimer = window.setTimeout(() => {
         this.longPressTimer = null;
@@ -94,18 +115,33 @@ export class PointerWatcher {
   };
 
   private move = (e: PointerEvent): void => {
+    const thr = this.getSettings().moveThresholdPx;
+    if (this.armed) {
+      const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
+      if (dist > thr) this.moved = true;
+    }
     if (this.longPressTimer != null) {
       const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
-      if (dist > this.getSettings().moveThresholdPx) this.clearTimer();
+      if (dist > thr) this.clearTimer();
     }
   };
 
   private up = (): void => {
     this.clearTimer();
+    if (this.armed) {
+      const wasTap = !this.moved;
+      this.armed = false;
+      if (wasTap) this.onTrigger({ clientX: this.downX, clientY: this.downY });
+    }
+  };
+
+  private cancel = (): void => {
+    this.clearTimer();
+    this.armed = false;
   };
 
   private ctx = (e: Event): void => {
-    // Гасим контекстное меню браузера/Obsidian после barrel-триггера мышью на ПК.
+    // Гасим контекстное меню после barrel-триггера мышью на ПК.
     if (this.suppressContext) {
       this.suppressContext = false;
       e.preventDefault();

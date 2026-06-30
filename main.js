@@ -27,11 +27,12 @@ var import_obsidian3 = require("obsidian");
 
 // src/settings.ts
 var DEFAULT_SETTINGS = {
-  trigger: "barrel",
+  trigger: "tapempty",
   longPressMs: 450,
   doubleTapMs: 300,
   moveThresholdPx: 8,
   edgeMarginPx: 16,
+  cleanupStrayDot: true,
   debugOverlay: false,
   defaultRectW: 160,
   defaultRectH: 100,
@@ -41,14 +42,17 @@ var DEFAULT_SETTINGS = {
 
 // src/PointerWatcher.ts
 var PointerWatcher = class {
-  constructor(el, getSettings, onTrigger, onDebug) {
+  constructor(el, getSettings, onTrigger, onArm, onDebug) {
     this.el = el;
     this.getSettings = getSettings;
     this.onTrigger = onTrigger;
+    this.onArm = onArm;
     this.onDebug = onDebug;
     this.longPressTimer = null;
     this.downX = 0;
     this.downY = 0;
+    this.moved = false;
+    this.armed = false;
     this.lastTapTime = 0;
     this.lastTapX = 0;
     this.lastTapY = 0;
@@ -59,6 +63,15 @@ var PointerWatcher = class {
         this.onDebug(`down  type=${e.pointerType}  buttons=${e.buttons}  button=${e.button}`);
       }
       if (!this.penLike(e)) return;
+      if (s.trigger === "tapempty") {
+        if (!(e.buttons & 1)) return;
+        this.downX = e.clientX;
+        this.downY = e.clientY;
+        this.moved = false;
+        this.armed = true;
+        this.onArm();
+        return;
+      }
       if (s.trigger === "barrel") {
         if (e.buttons & 2) this.fire(e);
         return;
@@ -67,6 +80,7 @@ var PointerWatcher = class {
         if (!(e.buttons & 1)) return;
         this.downX = e.clientX;
         this.downY = e.clientY;
+        this.onArm();
         this.clearTimer();
         this.longPressTimer = window.setTimeout(() => {
           this.longPressTimer = null;
@@ -90,13 +104,27 @@ var PointerWatcher = class {
       }
     };
     this.move = (e) => {
+      const thr = this.getSettings().moveThresholdPx;
+      if (this.armed) {
+        const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
+        if (dist > thr) this.moved = true;
+      }
       if (this.longPressTimer != null) {
         const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
-        if (dist > this.getSettings().moveThresholdPx) this.clearTimer();
+        if (dist > thr) this.clearTimer();
       }
     };
     this.up = () => {
       this.clearTimer();
+      if (this.armed) {
+        const wasTap = !this.moved;
+        this.armed = false;
+        if (wasTap) this.onTrigger({ clientX: this.downX, clientY: this.downY });
+      }
+    };
+    this.cancel = () => {
+      this.clearTimer();
+      this.armed = false;
     };
     this.ctx = (e) => {
       if (this.suppressContext) {
@@ -110,18 +138,18 @@ var PointerWatcher = class {
     this.el.addEventListener("pointerdown", this.down, true);
     this.el.addEventListener("pointermove", this.move, true);
     this.el.addEventListener("pointerup", this.up, true);
-    this.el.addEventListener("pointercancel", this.up, true);
+    this.el.addEventListener("pointercancel", this.cancel, true);
     this.el.addEventListener("contextmenu", this.ctx, true);
   }
   detach() {
     this.el.removeEventListener("pointerdown", this.down, true);
     this.el.removeEventListener("pointermove", this.move, true);
     this.el.removeEventListener("pointerup", this.up, true);
-    this.el.removeEventListener("pointercancel", this.up, true);
+    this.el.removeEventListener("pointercancel", this.cancel, true);
     this.el.removeEventListener("contextmenu", this.ctx, true);
     this.clearTimer();
   }
-  /** Перо или мышь (мышь — чтобы тестировать на ПК правой кнопкой). Палец игнорируем. */
+  /** Перо или мышь (мышь — чтобы тестировать на ПК). Палец игнорируем. */
   penLike(e) {
     return e.pointerType === "pen" || e.pointerType === "mouse";
   }
@@ -426,10 +454,21 @@ var ConnectorController = class {
 
 // src/main.ts
 var EXCALIDRAW_VIEW = "excalidraw";
+var STRAY_TYPES = ["freedraw", "draw", "line", "arrow"];
+var STRAY_MAX_PX = 12;
 function getEA(app) {
   var _a, _b, _c, _d, _e;
   const w = window;
   return (_e = (_d = w.ExcalidrawAutomate) != null ? _d : (_c = (_b = (_a = app.plugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b["obsidian-excalidraw-plugin"]) == null ? void 0 : _c.ea) != null ? _e : null;
+}
+function getApi(app) {
+  const ea = getEA(app);
+  if (!ea) return null;
+  try {
+    return ea.getExcalidrawAPI();
+  } catch (e) {
+    return null;
+  }
 }
 function hasBBox(el) {
   return el && typeof el.x === "number" && typeof el.y === "number" && typeof el.width === "number" && typeof el.height === "number";
@@ -440,6 +479,8 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     this.watchers = /* @__PURE__ */ new Map();
     this.debugEl = null;
     this.connector = new ConnectorController();
+    this.snapshot = null;
+    this.snapApi = null;
   }
   async onload() {
     await this.loadSettings();
@@ -481,16 +522,62 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
         el,
         () => this.settings,
         (ctx) => this.onTrigger(ctx),
+        () => this.snapshotScene(),
         (info) => this.updateDebug(info)
       );
       watcher.attach();
       this.watchers.set(el, watcher);
     }
   }
+  /** Снимок id элементов сцены до начала жеста (для удаления артефактной точки). */
+  snapshotScene() {
+    var _a, _b;
+    if (!this.settings.cleanupStrayDot) return;
+    const api = getApi(this.app);
+    if (!api) return;
+    try {
+      const els = (_b = (_a = api.getSceneElements) == null ? void 0 : _a.call(api)) != null ? _b : [];
+      this.snapshot = new Set(els.filter((e) => !e.isDeleted).map((e) => e.id));
+      this.snapApi = api;
+    } catch (e) {
+      this.snapshot = null;
+      this.snapApi = null;
+    }
+  }
+  clearSnapshot() {
+    this.snapshot = null;
+    this.snapApi = null;
+  }
+  /** Через короткую задержку удаляет крошечный штрих, случайно созданный пером при тапе. */
+  scheduleCleanup() {
+    const snap = this.snapshot;
+    const api = this.snapApi;
+    this.clearSnapshot();
+    if (!snap || !api) return;
+    window.setTimeout(() => {
+      var _a, _b;
+      try {
+        const cur = (_b = (_a = api.getSceneElements) == null ? void 0 : _a.call(api)) != null ? _b : [];
+        const strays = cur.filter(
+          (e) => !e.isDeleted && !snap.has(e.id) && STRAY_TYPES.includes(e.type) && Math.max(e.width || 0, e.height || 0) < STRAY_MAX_PX
+        );
+        if (strays.length) {
+          const ids = new Set(strays.map((e) => e.id));
+          api.updateScene({
+            elements: cur.filter((e) => !ids.has(e.id)),
+            commitToHistory: false
+          });
+        }
+      } catch (err) {
+        console.error("[excalidraw-stylus-menu] cleanup failed", err);
+      }
+    }, 80);
+  }
   onTrigger(ctx) {
     var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
     const ea = getEA(this.app);
     if (!ea) {
+      this.clearSnapshot();
       new import_obsidian3.Notice("Excalidraw \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u2014 \u0432\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u043F\u043B\u0430\u0433\u0438\u043D Excalidraw.");
       return;
     }
@@ -498,13 +585,9 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       ea.setView("active");
     } catch (e) {
     }
-    let api = null;
-    try {
-      api = ea.getExcalidrawAPI();
-    } catch (e) {
-      api = null;
-    }
+    const api = getApi(this.app);
     if (!api) {
+      this.clearSnapshot();
       new import_obsidian3.Notice("\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0445\u043E\u043B\u0441\u0442 Excalidraw \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D.");
       return;
     }
@@ -515,6 +598,15 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     const elements = ((_k = (_j = api.getSceneElements) == null ? void 0 : _j.call(api)) != null ? _k : []).filter(
       (el) => el && !el.isDeleted && hasBBox(el)
     );
+    const margin = this.settings.edgeMarginPx;
+    const onEdge = elements.some((el) => nearEdge(sceneX, sceneY, el, margin));
+    if (this.settings.trigger === "tapempty" && !onEdge) {
+      const onObject = elements.some((el) => contains(sceneX, sceneY, el, 0));
+      if (onObject) {
+        this.clearSnapshot();
+        return;
+      }
+    }
     const handled = this.connector.handleTrigger({
       ea,
       api,
@@ -523,8 +615,12 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       elements,
       settings: this.settings
     });
-    if (handled) return;
+    if (handled) {
+      this.scheduleCleanup();
+      return;
+    }
     this.openInsertMenu(ctx, ea, sceneX, sceneY);
+    this.scheduleCleanup();
   }
   openInsertMenu(ctx, ea, x, y) {
     const items = [
@@ -591,10 +687,24 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     new import_obsidian3.Setting(containerEl).setName("\u0416\u0435\u0441\u0442-\u0442\u0440\u0438\u0433\u0433\u0435\u0440").setDesc("\u0427\u0435\u043C \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0442\u044C \u043C\u0435\u043D\u044E \u0432\u0441\u0442\u0430\u0432\u043A\u0438 \u043F\u0435\u0440\u043E\u043C.").addDropdown(
-      (d) => d.addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").setValue(this.plugin.settings.trigger).onChange(async (v) => {
+      (d) => d.addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435").setValue(this.plugin.settings.trigger).onChange(async (v) => {
         this.plugin.settings.trigger = v;
         await this.plugin.saveSettings();
       })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u0423\u0431\u0438\u0440\u0430\u0442\u044C \u0441\u043B\u0443\u0447\u0430\u0439\u043D\u0443\u044E \u0442\u043E\u0447\u043A\u0443").setDesc(
+      "\u0415\u0441\u043B\u0438 \u0430\u043A\u0442\u0438\u0432\u0435\u043D \u043A\u0430\u0440\u0430\u043D\u0434\u0430\u0448, \u0442\u0430\u043F \u043F\u0435\u0440\u043E\u043C \u043C\u043E\u0436\u0435\u0442 \u043E\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u0442\u043E\u0447\u043A\u0443 \u2014 \u0443\u0434\u0430\u043B\u044F\u0442\u044C \u0435\u0451 \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438."
+    ).addToggle(
+      (t) => t.setValue(this.plugin.settings.cleanupStrayDot).onChange(async (v) => {
+        this.plugin.settings.cleanupStrayDot = v;
+        await this.plugin.saveSettings();
+      })
+    );
+    this.numberField(
+      "\u041F\u043E\u0440\u043E\u0433 \u0434\u0432\u0438\u0436\u0435\u043D\u0438\u044F (\u0442\u0430\u043F), px",
+      "\u0415\u0441\u043B\u0438 \u043F\u0435\u0440\u043E \u0441\u0434\u0432\u0438\u043D\u0443\u043B\u043E\u0441\u044C \u0431\u043E\u043B\u044C\u0448\u0435 \u2014 \u044D\u0442\u043E \u0440\u0438\u0441\u043E\u0432\u0430\u043D\u0438\u0435, \u0430 \u043D\u0435 \u0442\u0430\u043F.",
+      () => this.plugin.settings.moveThresholdPx,
+      (n) => this.plugin.settings.moveThresholdPx = n
     );
     this.numberField(
       "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435, \u043C\u0441",
@@ -626,9 +736,7 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
       () => this.plugin.settings.defaultRectH,
       (n) => this.plugin.settings.defaultRectH = n
     );
-    new import_obsidian3.Setting(containerEl).setName("Debug-\u043E\u0432\u0435\u0440\u043B\u0435\u0439").setDesc(
-      "\u041F\u043E\u043A\u0430\u0437\u044B\u0432\u0430\u0442\u044C pointerType \u0438 buttons \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0433\u043E \u043A\u0430\u0441\u0430\u043D\u0438\u044F \u2014 \u043F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C, \u043E\u0442\u0434\u0430\u0451\u0442 \u043B\u0438 S Pen \u0431\u043E\u043A\u043E\u0432\u0443\u044E \u043A\u043D\u043E\u043F\u043A\u0443 (\u043E\u0436\u0438\u0434\u0430\u0435\u0442\u0441\u044F buttons=3)."
-    ).addToggle(
+    new import_obsidian3.Setting(containerEl).setName("Debug-\u043E\u0432\u0435\u0440\u043B\u0435\u0439").setDesc("\u041F\u043E\u043A\u0430\u0437\u044B\u0432\u0430\u0442\u044C pointerType \u0438 buttons \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0433\u043E \u043A\u0430\u0441\u0430\u043D\u0438\u044F (\u0434\u0438\u0430\u0433\u043D\u043E\u0441\u0442\u0438\u043A\u0430 \u043F\u0435\u0440\u0430).").addToggle(
       (t) => t.setValue(this.plugin.settings.debugOverlay).onChange(async (v) => {
         this.plugin.settings.debugOverlay = v;
         await this.plugin.saveSettings();
