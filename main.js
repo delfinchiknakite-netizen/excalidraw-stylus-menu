@@ -1,0 +1,639 @@
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
+// src/main.ts
+var main_exports = {};
+__export(main_exports, {
+  default: () => StylusMenuPlugin,
+  getEA: () => getEA
+});
+module.exports = __toCommonJS(main_exports);
+var import_obsidian3 = require("obsidian");
+
+// src/settings.ts
+var DEFAULT_SETTINGS = {
+  trigger: "barrel",
+  longPressMs: 450,
+  doubleTapMs: 300,
+  moveThresholdPx: 8,
+  edgeMarginPx: 16,
+  debugOverlay: false,
+  defaultRectW: 160,
+  defaultRectH: 100,
+  defaultEmbedW: 400,
+  defaultEmbedH: 300
+};
+
+// src/PointerWatcher.ts
+var PointerWatcher = class {
+  constructor(el, getSettings, onTrigger, onDebug) {
+    this.el = el;
+    this.getSettings = getSettings;
+    this.onTrigger = onTrigger;
+    this.onDebug = onDebug;
+    this.longPressTimer = null;
+    this.downX = 0;
+    this.downY = 0;
+    this.lastTapTime = 0;
+    this.lastTapX = 0;
+    this.lastTapY = 0;
+    this.suppressContext = false;
+    this.down = (e) => {
+      const s = this.getSettings();
+      if (s.debugOverlay) {
+        this.onDebug(`down  type=${e.pointerType}  buttons=${e.buttons}  button=${e.button}`);
+      }
+      if (!this.penLike(e)) return;
+      if (s.trigger === "barrel") {
+        if (e.buttons & 2) this.fire(e);
+        return;
+      }
+      if (s.trigger === "longpress") {
+        if (!(e.buttons & 1)) return;
+        this.downX = e.clientX;
+        this.downY = e.clientY;
+        this.clearTimer();
+        this.longPressTimer = window.setTimeout(() => {
+          this.longPressTimer = null;
+          this.onTrigger({ clientX: this.downX, clientY: this.downY });
+        }, s.longPressMs);
+        return;
+      }
+      if (s.trigger === "doubletap") {
+        if (!(e.buttons & 1)) return;
+        const dt = e.timeStamp - this.lastTapTime;
+        const dist = Math.hypot(e.clientX - this.lastTapX, e.clientY - this.lastTapY);
+        if (dt < s.doubleTapMs && dist < s.moveThresholdPx) {
+          this.lastTapTime = 0;
+          this.fire(e);
+        } else {
+          this.lastTapTime = e.timeStamp;
+          this.lastTapX = e.clientX;
+          this.lastTapY = e.clientY;
+        }
+        return;
+      }
+    };
+    this.move = (e) => {
+      if (this.longPressTimer != null) {
+        const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
+        if (dist > this.getSettings().moveThresholdPx) this.clearTimer();
+      }
+    };
+    this.up = () => {
+      this.clearTimer();
+    };
+    this.ctx = (e) => {
+      if (this.suppressContext) {
+        this.suppressContext = false;
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+  }
+  attach() {
+    this.el.addEventListener("pointerdown", this.down, true);
+    this.el.addEventListener("pointermove", this.move, true);
+    this.el.addEventListener("pointerup", this.up, true);
+    this.el.addEventListener("pointercancel", this.up, true);
+    this.el.addEventListener("contextmenu", this.ctx, true);
+  }
+  detach() {
+    this.el.removeEventListener("pointerdown", this.down, true);
+    this.el.removeEventListener("pointermove", this.move, true);
+    this.el.removeEventListener("pointerup", this.up, true);
+    this.el.removeEventListener("pointercancel", this.up, true);
+    this.el.removeEventListener("contextmenu", this.ctx, true);
+    this.clearTimer();
+  }
+  /** Перо или мышь (мышь — чтобы тестировать на ПК правой кнопкой). Палец игнорируем. */
+  penLike(e) {
+    return e.pointerType === "pen" || e.pointerType === "mouse";
+  }
+  fire(e) {
+    var _a;
+    e.preventDefault();
+    e.stopPropagation();
+    (_a = e.stopImmediatePropagation) == null ? void 0 : _a.call(e);
+    if (e.pointerType === "mouse") this.suppressContext = true;
+    this.onTrigger({ clientX: e.clientX, clientY: e.clientY });
+  }
+  clearTimer() {
+    if (this.longPressTimer != null) {
+      clearTimeout(this.longPressTimer);
+      this.longPressTimer = null;
+    }
+  }
+};
+
+// src/InsertMenu.ts
+var InsertMenu = class {
+  constructor(anchor, root) {
+    this.anchor = anchor;
+    this.root = root;
+    this.overlay = null;
+    this.menu = null;
+  }
+  open() {
+    this.overlay = document.body.createDiv({ cls: "esm-overlay" });
+    this.overlay.addEventListener(
+      "pointerdown",
+      (e) => {
+        if (e.target === this.overlay) {
+          e.preventDefault();
+          this.close();
+        }
+      },
+      true
+    );
+    this.menu = this.overlay.createDiv({ cls: "esm-menu" });
+    this.render(this.root, false);
+    this.position();
+  }
+  close() {
+    var _a;
+    (_a = this.overlay) == null ? void 0 : _a.remove();
+    this.overlay = null;
+    this.menu = null;
+  }
+  render(items, isSub) {
+    const menu = this.menu;
+    if (!menu) return;
+    menu.empty();
+    if (isSub) {
+      const back = menu.createDiv({ cls: "esm-item esm-back" });
+      back.setText("\u2039 \u041D\u0430\u0437\u0430\u0434");
+      back.addEventListener("pointerup", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        this.render(this.root, false);
+        this.position();
+      });
+    }
+    for (const it of items) {
+      const row = menu.createDiv({ cls: "esm-item" });
+      row.setText(it.label);
+      row.addEventListener("pointerup", async (e) => {
+        var _a;
+        e.stopPropagation();
+        e.preventDefault();
+        if (it.children) {
+          this.render(it.children, true);
+          this.position();
+          return;
+        }
+        this.close();
+        try {
+          await ((_a = it.onClick) == null ? void 0 : _a.call(it));
+        } catch (err) {
+          console.error("[excalidraw-stylus-menu] insert failed", err);
+        }
+      });
+    }
+  }
+  position() {
+    const m = this.menu;
+    if (!m) return;
+    const rect = m.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let x = this.anchor.x + 8;
+    let y = this.anchor.y + 8;
+    if (x + rect.width > vw - 8) x = vw - rect.width - 8;
+    if (y + rect.height > vh - 8) y = vh - rect.height - 8;
+    if (x < 8) x = 8;
+    if (y < 8) y = 8;
+    m.style.left = `${x}px`;
+    m.style.top = `${y}px`;
+  }
+};
+
+// src/inserters.ts
+var import_obsidian = require("obsidian");
+var IMAGE_EXT = /* @__PURE__ */ new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "svg",
+  "webp",
+  "bmp",
+  "avif",
+  "ico"
+]);
+function isImage(f) {
+  return IMAGE_EXT.has((f.extension || "").toLowerCase());
+}
+async function commit(ea) {
+  await ea.addElementsToView(false, true, true);
+}
+async function insertText(ea, app, x, y) {
+  const text = await promptText(app, "\u0422\u0435\u043A\u0441\u0442");
+  if (text == null) return;
+  ea.reset();
+  ea.setView("active");
+  ea.addText(x, y, text, { autoResize: true });
+  await commit(ea);
+}
+async function insertSticker(ea, app, x, y) {
+  const text = await promptText(app, "\u0422\u0435\u043A\u0441\u0442 \u0441\u0442\u0438\u043A\u0435\u0440\u0430");
+  if (text == null) return;
+  ea.reset();
+  ea.setView("active");
+  ea.addText(x, y, text.trim() === "" ? " " : text, {
+    box: "box",
+    textAlign: "center",
+    boxPadding: 12
+  });
+  await commit(ea);
+}
+async function insertShape(ea, kind, x, y, s) {
+  ea.reset();
+  ea.setView("active");
+  const w = s.defaultRectW;
+  const h = s.defaultRectH;
+  switch (kind) {
+    case "rect":
+      ea.addRect(x, y, w, h);
+      break;
+    case "ellipse":
+      ea.addEllipse(x, y, w, h);
+      break;
+    case "arrow":
+      ea.addArrow([[x, y], [x + w, y]], { endArrowHead: "arrow" });
+      break;
+    case "line":
+      ea.addLine([[x, y], [x + w, y]]);
+      break;
+  }
+  await commit(ea);
+}
+async function insertEmbedOrImage(ea, app, x, y, s) {
+  const file = await pickFile(app);
+  if (!file) return;
+  ea.reset();
+  ea.setView("active");
+  if (isImage(file)) {
+    await ea.addImage(x, y, file);
+  } else {
+    ea.addEmbeddable(x, y, s.defaultEmbedW, s.defaultEmbedH, void 0, file);
+  }
+  await commit(ea);
+}
+function promptText(app, title) {
+  return new Promise((resolve) => new TextPromptModal(app, title, resolve).open());
+}
+var TextPromptModal = class extends import_obsidian.Modal {
+  constructor(app, heading, cb) {
+    super(app);
+    this.heading = heading;
+    this.cb = cb;
+    this.resolved = false;
+  }
+  onOpen() {
+    this.titleEl.setText(this.heading);
+    const input = this.contentEl.createEl("textarea", { cls: "esm-input" });
+    input.rows = 3;
+    window.setTimeout(() => input.focus(), 0);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        this.done(input.value);
+      }
+    });
+    const row = this.contentEl.createDiv({ cls: "esm-modal-buttons" });
+    const ok = row.createEl("button", { text: "\u0412\u0441\u0442\u0430\u0432\u0438\u0442\u044C" });
+    ok.addClass("mod-cta");
+    ok.addEventListener("click", () => this.done(input.value));
+    const cancel = row.createEl("button", { text: "\u041E\u0442\u043C\u0435\u043D\u0430" });
+    cancel.addEventListener("click", () => this.done(null));
+  }
+  done(v) {
+    if (this.resolved) return;
+    this.resolved = true;
+    this.cb(v);
+    this.close();
+  }
+  onClose() {
+    if (!this.resolved) {
+      this.resolved = true;
+      this.cb(null);
+    }
+    this.contentEl.empty();
+  }
+};
+function pickFile(app) {
+  return new Promise((resolve) => new FilePickModal(app, resolve).open());
+}
+var FilePickModal = class extends import_obsidian.FuzzySuggestModal {
+  constructor(app, cb) {
+    super(app);
+    this.cb = cb;
+    this.resolved = false;
+    this.setPlaceholder("\u0412\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u0435 \u0438\u043B\u0438 .md \u0437\u0430\u043C\u0435\u0442\u043A\u0443 \u0434\u043B\u044F \u0432\u0441\u0442\u0430\u0432\u043A\u0438");
+  }
+  getItems() {
+    return this.app.vault.getFiles().filter((f) => isImage(f) || f.extension === "md");
+  }
+  getItemText(f) {
+    return f.path;
+  }
+  onChooseItem(f) {
+    this.resolved = true;
+    this.cb(f);
+  }
+  onClose() {
+    if (!this.resolved) {
+      this.resolved = true;
+      this.cb(null);
+    }
+  }
+};
+
+// src/connector.ts
+var import_obsidian2 = require("obsidian");
+function nearEdge(px, py, el, margin) {
+  const inOuter = px >= el.x - margin && px <= el.x + el.width + margin && py >= el.y - margin && py <= el.y + el.height + margin;
+  const inInner = px >= el.x + margin && px <= el.x + el.width - margin && py >= el.y + margin && py <= el.y + el.height - margin;
+  return inOuter && !inInner;
+}
+function contains(px, py, el, margin) {
+  return px >= el.x - margin && px <= el.x + el.width + margin && py >= el.y - margin && py <= el.y + el.height + margin;
+}
+var ConnectorController = class {
+  constructor() {
+    this.sourceId = null;
+  }
+  /** @returns true, если событие обработано коннектором (меню открывать не нужно). */
+  handleTrigger(input) {
+    const { sceneX, sceneY, elements, settings } = input;
+    const margin = settings.edgeMarginPx;
+    if (this.sourceId == null) {
+      const edgeEl = elements.find((el) => nearEdge(sceneX, sceneY, el, margin));
+      if (!edgeEl) return false;
+      this.sourceId = edgeEl.id;
+      new import_obsidian2.Notice("\u041A\u043E\u043D\u043D\u0435\u043A\u0442\u043E\u0440: \u043A\u043E\u0441\u043D\u0438\u0442\u0435\u0441\u044C \u0432\u0442\u043E\u0440\u043E\u0433\u043E \u0431\u043B\u043E\u043A\u0430 (\u043F\u0443\u0441\u0442\u043E\u0435 \u043C\u0435\u0441\u0442\u043E \u2014 \u043E\u0442\u043C\u0435\u043D\u0430)");
+      return true;
+    }
+    const src = elements.find((el) => el.id === this.sourceId);
+    const tgt = elements.find(
+      (el) => el.id !== this.sourceId && contains(sceneX, sceneY, el, margin)
+    );
+    this.sourceId = null;
+    if (!src || !tgt) {
+      new import_obsidian2.Notice("\u041A\u043E\u043D\u043D\u0435\u043A\u0442\u043E\u0440 \u043E\u0442\u043C\u0435\u043D\u0451\u043D");
+      return true;
+    }
+    void this.drawArrow(input.ea, src, tgt);
+    return true;
+  }
+  reset() {
+    this.sourceId = null;
+  }
+  async drawArrow(ea, a, b) {
+    try {
+      ea.reset();
+      ea.setView("active");
+      const ca = [a.x + a.width / 2, a.y + a.height / 2];
+      const cb = [b.x + b.width / 2, b.y + b.height / 2];
+      try {
+        ea.addArrow([ca, cb], { endArrowHead: "arrow", startObjectId: a.id, endObjectId: b.id });
+      } catch (e) {
+        ea.addArrow([ca, cb], { endArrowHead: "arrow" });
+      }
+      await ea.addElementsToView(false, true, true);
+    } catch (e) {
+      console.error("[excalidraw-stylus-menu] arrow failed", e);
+      new import_obsidian2.Notice("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043D\u0430\u0440\u0438\u0441\u043E\u0432\u0430\u0442\u044C \u0441\u0442\u0440\u0435\u043B\u043A\u0443");
+    }
+  }
+};
+
+// src/main.ts
+var EXCALIDRAW_VIEW = "excalidraw";
+function getEA(app) {
+  var _a, _b, _c, _d, _e;
+  const w = window;
+  return (_e = (_d = w.ExcalidrawAutomate) != null ? _d : (_c = (_b = (_a = app.plugins) == null ? void 0 : _a.plugins) == null ? void 0 : _b["obsidian-excalidraw-plugin"]) == null ? void 0 : _c.ea) != null ? _e : null;
+}
+function hasBBox(el) {
+  return el && typeof el.x === "number" && typeof el.y === "number" && typeof el.width === "number" && typeof el.height === "number";
+}
+var StylusMenuPlugin = class extends import_obsidian3.Plugin {
+  constructor() {
+    super(...arguments);
+    this.watchers = /* @__PURE__ */ new Map();
+    this.debugEl = null;
+    this.connector = new ConnectorController();
+  }
+  async onload() {
+    await this.loadSettings();
+    this.addSettingTab(new StylusMenuSettingTab(this.app, this));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.syncWatchers()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.syncWatchers()));
+    this.app.workspace.onLayoutReady(() => this.syncWatchers());
+    this.addCommand({
+      id: "toggle-debug-overlay",
+      name: "\u041F\u0435\u0440\u0435\u043A\u043B\u044E\u0447\u0438\u0442\u044C debug-\u043E\u0432\u0435\u0440\u043B\u0435\u0439 \u0441\u0442\u0438\u043B\u0443\u0441\u0430",
+      callback: async () => {
+        this.settings.debugOverlay = !this.settings.debugOverlay;
+        await this.saveSettings();
+        this.refreshDebugOverlay();
+      }
+    });
+    this.refreshDebugOverlay();
+  }
+  onunload() {
+    for (const w of Array.from(this.watchers.values())) w.detach();
+    this.watchers.clear();
+    this.removeDebugOverlay();
+  }
+  /** Навешивает PointerWatcher на все открытые вью Excalidraw, снимает с закрытых. */
+  syncWatchers() {
+    for (const [el, w] of Array.from(this.watchers.entries())) {
+      if (!document.body.contains(el)) {
+        w.detach();
+        this.watchers.delete(el);
+        this.connector.reset();
+      }
+    }
+    const leaves = this.app.workspace.getLeavesOfType(EXCALIDRAW_VIEW);
+    for (const leaf of leaves) {
+      const view = leaf.view;
+      const el = view == null ? void 0 : view.contentEl;
+      if (!el || this.watchers.has(el)) continue;
+      const watcher = new PointerWatcher(
+        el,
+        () => this.settings,
+        (ctx) => this.onTrigger(ctx),
+        (info) => this.updateDebug(info)
+      );
+      watcher.attach();
+      this.watchers.set(el, watcher);
+    }
+  }
+  onTrigger(ctx) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _i, _j, _k;
+    const ea = getEA(this.app);
+    if (!ea) {
+      new import_obsidian3.Notice("Excalidraw \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u2014 \u0432\u043A\u043B\u044E\u0447\u0438\u0442\u0435 \u043F\u043B\u0430\u0433\u0438\u043D Excalidraw.");
+      return;
+    }
+    try {
+      ea.setView("active");
+    } catch (e) {
+    }
+    let api = null;
+    try {
+      api = ea.getExcalidrawAPI();
+    } catch (e) {
+      api = null;
+    }
+    if (!api) {
+      new import_obsidian3.Notice("\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0445\u043E\u043B\u0441\u0442 Excalidraw \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D.");
+      return;
+    }
+    const st = (_b = (_a = api.getAppState) == null ? void 0 : _a.call(api)) != null ? _b : {};
+    const zoom = (_e = (_d = (_c = st == null ? void 0 : st.zoom) == null ? void 0 : _c.value) != null ? _d : st == null ? void 0 : st.zoom) != null ? _e : 1;
+    const sceneX = (ctx.clientX - ((_f = st.offsetLeft) != null ? _f : 0)) / zoom - ((_g = st.scrollX) != null ? _g : 0);
+    const sceneY = (ctx.clientY - ((_h = st.offsetTop) != null ? _h : 0)) / zoom - ((_i = st.scrollY) != null ? _i : 0);
+    const elements = ((_k = (_j = api.getSceneElements) == null ? void 0 : _j.call(api)) != null ? _k : []).filter(
+      (el) => el && !el.isDeleted && hasBBox(el)
+    );
+    const handled = this.connector.handleTrigger({
+      ea,
+      api,
+      sceneX,
+      sceneY,
+      elements,
+      settings: this.settings
+    });
+    if (handled) return;
+    this.openInsertMenu(ctx, ea, sceneX, sceneY);
+  }
+  openInsertMenu(ctx, ea, x, y) {
+    const items = [
+      { label: "\u270E  \u0422\u0435\u043A\u0441\u0442", onClick: () => insertText(ea, this.app, x, y) },
+      { label: "\u25A2  \u0421\u0442\u0438\u043A\u0435\u0440 (\u0442\u0435\u043A\u0441\u0442 \u0432 \u0440\u0430\u043C\u043A\u0435)", onClick: () => insertSticker(ea, this.app, x, y) },
+      {
+        label: "\u25C6  \u0424\u0438\u0433\u0443\u0440\u044B \u203A",
+        children: [
+          { label: "\u25AD  \u041F\u0440\u044F\u043C\u043E\u0443\u0433\u043E\u043B\u044C\u043D\u0438\u043A", onClick: () => insertShape(ea, "rect", x, y, this.settings) },
+          { label: "\u25EF  \u042D\u043B\u043B\u0438\u043F\u0441", onClick: () => insertShape(ea, "ellipse", x, y, this.settings) },
+          { label: "\u2192  \u0421\u0442\u0440\u0435\u043B\u043A\u0430", onClick: () => insertShape(ea, "arrow", x, y, this.settings) },
+          { label: "\uFF0F  \u041B\u0438\u043D\u0438\u044F", onClick: () => insertShape(ea, "line", x, y, this.settings) }
+        ]
+      },
+      {
+        label: "\u{1F5BC}  \u0417\u0430\u043C\u0435\u0442\u043A\u0430 / \u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u0435",
+        onClick: () => insertEmbedOrImage(ea, this.app, x, y, this.settings)
+      }
+    ];
+    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+  }
+  /* ---------- debug overlay ---------- */
+  refreshDebugOverlay() {
+    if (this.settings.debugOverlay) this.ensureDebugOverlay();
+    else this.removeDebugOverlay();
+  }
+  ensureDebugOverlay() {
+    if (this.debugEl) return;
+    this.debugEl = document.body.createDiv({ cls: "esm-debug" });
+    this.debugEl.setText("S Pen debug: \u043A\u043E\u0441\u043D\u0438\u0442\u0435\u0441\u044C \u0445\u043E\u043B\u0441\u0442\u0430\u2026");
+  }
+  removeDebugOverlay() {
+    var _a;
+    (_a = this.debugEl) == null ? void 0 : _a.remove();
+    this.debugEl = null;
+  }
+  updateDebug(info) {
+    if (this.debugEl) this.debugEl.setText(info);
+  }
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
+};
+var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+  numberField(name, desc, get, set, placeholder = "") {
+    new import_obsidian3.Setting(this.containerEl).setName(name).setDesc(desc).addText(
+      (t) => t.setPlaceholder(placeholder).setValue(String(get())).onChange(async (v) => {
+        const n = parseInt(v, 10);
+        if (!isNaN(n)) {
+          set(n);
+          await this.plugin.saveSettings();
+        }
+      })
+    );
+  }
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    new import_obsidian3.Setting(containerEl).setName("\u0416\u0435\u0441\u0442-\u0442\u0440\u0438\u0433\u0433\u0435\u0440").setDesc("\u0427\u0435\u043C \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0442\u044C \u043C\u0435\u043D\u044E \u0432\u0441\u0442\u0430\u0432\u043A\u0438 \u043F\u0435\u0440\u043E\u043C.").addDropdown(
+      (d) => d.addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").setValue(this.plugin.settings.trigger).onChange(async (v) => {
+        this.plugin.settings.trigger = v;
+        await this.plugin.saveSettings();
+      })
+    );
+    this.numberField(
+      "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435, \u043C\u0441",
+      "\u0414\u043B\u044F \u0436\u0435\u0441\u0442\u0430 \xAB\u0434\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C\xBB.",
+      () => this.plugin.settings.longPressMs,
+      (n) => this.plugin.settings.longPressMs = n
+    );
+    this.numberField(
+      "\u041E\u043A\u043D\u043E \u0434\u0432\u043E\u0439\u043D\u043E\u0433\u043E \u043A\u0430\u0441\u0430\u043D\u0438\u044F, \u043C\u0441",
+      "\u0414\u043B\u044F \u0436\u0435\u0441\u0442\u0430 \xAB\u0434\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C\xBB.",
+      () => this.plugin.settings.doubleTapMs,
+      (n) => this.plugin.settings.doubleTapMs = n
+    );
+    this.numberField(
+      "\u0417\u043E\u043D\u0430 \u043A\u0440\u0430\u044F \u0431\u043B\u043E\u043A\u0430, px (\u0441\u0446\u0435\u043D\u0430)",
+      "\u041D\u0430\u0441\u043A\u043E\u043B\u044C\u043A\u043E \u0431\u043B\u0438\u0437\u043A\u043E \u043A \u0440\u0430\u043C\u043A\u0435 \u0431\u043B\u043E\u043A\u0430 \u0441\u0447\u0438\u0442\u0430\u0435\u0442\u0441\u044F \xAB\u043A\u0440\u0430\u0439\xBB \u0434\u043B\u044F \u0441\u0442\u0440\u0435\u043B\u043A\u0438-\u043A\u043E\u043D\u043D\u0435\u043A\u0442\u043E\u0440\u0430.",
+      () => this.plugin.settings.edgeMarginPx,
+      (n) => this.plugin.settings.edgeMarginPx = n
+    );
+    this.numberField(
+      "\u0428\u0438\u0440\u0438\u043D\u0430 \u0444\u0438\u0433\u0443\u0440\u044B \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E",
+      "\u041F\u0440\u044F\u043C\u043E\u0443\u0433\u043E\u043B\u044C\u043D\u0438\u043A / \u044D\u043B\u043B\u0438\u043F\u0441 / \u0434\u043B\u0438\u043D\u0430 \u043B\u0438\u043D\u0438\u0438 \u0438 \u0441\u0442\u0440\u0435\u043B\u043A\u0438.",
+      () => this.plugin.settings.defaultRectW,
+      (n) => this.plugin.settings.defaultRectW = n
+    );
+    this.numberField(
+      "\u0412\u044B\u0441\u043E\u0442\u0430 \u0444\u0438\u0433\u0443\u0440\u044B \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E",
+      "",
+      () => this.plugin.settings.defaultRectH,
+      (n) => this.plugin.settings.defaultRectH = n
+    );
+    new import_obsidian3.Setting(containerEl).setName("Debug-\u043E\u0432\u0435\u0440\u043B\u0435\u0439").setDesc(
+      "\u041F\u043E\u043A\u0430\u0437\u044B\u0432\u0430\u0442\u044C pointerType \u0438 buttons \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u0435\u0433\u043E \u043A\u0430\u0441\u0430\u043D\u0438\u044F \u2014 \u043F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C, \u043E\u0442\u0434\u0430\u0451\u0442 \u043B\u0438 S Pen \u0431\u043E\u043A\u043E\u0432\u0443\u044E \u043A\u043D\u043E\u043F\u043A\u0443 (\u043E\u0436\u0438\u0434\u0430\u0435\u0442\u0441\u044F buttons=3)."
+    ).addToggle(
+      (t) => t.setValue(this.plugin.settings.debugOverlay).onChange(async (v) => {
+        this.plugin.settings.debugOverlay = v;
+        await this.plugin.saveSettings();
+        this.plugin.refreshDebugOverlay();
+      })
+    );
+  }
+};
