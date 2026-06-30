@@ -1,6 +1,6 @@
 {
   "name": "excalidraw-stylus-menu",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Stylus (S Pen) insert menu and connector mode for the Obsidian Excalidraw plugin.",
   "main": "main.js",
   "scripts": {
