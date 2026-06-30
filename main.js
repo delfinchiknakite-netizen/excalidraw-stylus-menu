@@ -433,16 +433,24 @@ async function insertShape(ea, kind, x, y, s) {
   await commit(ea);
 }
 async function insertEmbedOrImage(ea, app, x, y, s) {
+  var _a, _b;
   const file = await pickFile(app);
   if (!file) return;
   ea.reset();
   ea.setView("active");
   if (isImage(file)) {
     await ea.addImage(x, y, file);
-  } else {
-    ea.addEmbeddable(x, y, s.defaultEmbedW, s.defaultEmbedH, void 0, file);
+    await commit(ea);
+    return;
   }
+  const id = ea.addEmbeddable(x, y, s.defaultEmbedW, s.defaultEmbedH, `[[${file.path}]]`, void 0);
   await commit(ea);
+  try {
+    const api = (_a = ea.getExcalidrawAPI) == null ? void 0 : _a.call(ea);
+    const el = (_b = ea.getViewElements) == null ? void 0 : _b.call(ea).find((e) => e.id === id);
+    if (api && el) api.selectElements([el]);
+  } catch (e) {
+  }
 }
 function promptText(app, title) {
   return new Promise((resolve) => new TextPromptModal(app, title, resolve).open());

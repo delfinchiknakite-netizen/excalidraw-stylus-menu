@@ -77,12 +77,26 @@ export async function insertEmbedOrImage(
   if (!file) return;
   ea.reset();
   ea.setView("active");
+
   if (isImage(file)) {
     await ea.addImage(x, y, file);
-  } else {
-    ea.addEmbeddable(x, y, s.defaultEmbedW, s.defaultEmbedH, undefined, file);
+    await commit(ea);
+    return;
   }
+
+  // Заметка (.md) — встраиваемый блок. ЯВНО передаём ссылку как url (5-й аргумент),
+  // как это делает штатная команда Excalidraw «Embed note». Если оставить url пустым
+  // и полагаться на авто-вывод ссылки из файла, встройка может тут же исчезнуть.
+  const id = ea.addEmbeddable(x, y, s.defaultEmbedW, s.defaultEmbedH, `[[${file.path}]]`, undefined);
   await commit(ea);
+  // Выделяем вставленный блок — так же делает штатная команда (заодно «закрепляет» его).
+  try {
+    const api = ea.getExcalidrawAPI?.();
+    const el = ea.getViewElements?.().find((e: any) => e.id === id);
+    if (api && el) api.selectElements([el]);
+  } catch {
+    /* ignore */
+  }
 }
 
 /* ---------- модальные окна ---------- */
