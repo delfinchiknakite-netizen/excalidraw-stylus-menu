@@ -95,7 +95,14 @@ esbuild.config.mjs  — сборка в main.js
 
 Всплывающий список у точки `ctx`, крупные тач-цели, закрывается тапом вне. Пункт `{label, onClick}`
 или `{label, children}` (подменю). Позиционируется в пределах экрана. Закрывает себя перед запуском
-`onClick` (чтобы не блокировать модалки).
+`onClick` (чтобы не блокировать модалки). `open(onClose?)` вызывает `onClose` при любом закрытии.
+
+**Синглтон меню (`main.presentMenu`)**: все меню открываются через один презентер. Если меню уже
+открыто — вызов только ЗАКРЫВАЕТ его (тап-дисмисс) и не открывает новое. Сразу после закрытия
+действует окно подавления `menuSuppressUntil` (~350 мс), чтобы отложенный жест (таймер одиночного
+тапа кнопки) не открыл меню заново. Дополнительно `PointerWatcher.down` при касании вызывает
+`clearTapTimer()` — отменяет отложенное меню вставки, если пользователь начал касание. Вместе это
+не даёт меню стекироваться и убирает «меню вставки открывается на тапе по пустому после меню объекта».
 
 ### Три меню (все в `main.ts`)
 1. **Меню вставки** (`openInsertMenu`) — Текст, Стикер, Фигуры›, Заметка/изображение.
@@ -120,8 +127,10 @@ esbuild.config.mjs  — сборка в main.js
 - **duplicate/delete набора**: `duplicateElements` (тот же `cloneElements`), `deleteElements`
   (убирает элементы + их bound-text).
 - **connectArrow(from, to)**: `copyViewElementsToEAforEditing([from,to])` → `connectObjects` → commit.
-- **вставка** (`inserters.ts`): `commitSelect(ea, id)` = `addElementsToView` + `selectElements([id])`
-  (выделение «закрепляет» элемент, иначе исчезает). Заметка .md — явный `[[path]]` как url.
+- **вставка** (`inserters.ts`): `commitSelect(ea, id)` = `addElementsToView` + выделение по id через
+  `updateScene({appState:{selectedElementIds}})` (выделение «закрепляет» элемент, иначе исчезает;
+  по id надёжнее, чем `selectElements`, — не зависит от готовности `getViewElements`). Заметка .md —
+  явный `[[path]]` как url, тоже через `commitSelect`.
 
 ## Очистка артефактов
 

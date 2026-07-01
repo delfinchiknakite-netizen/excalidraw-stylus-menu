@@ -106,6 +106,7 @@ export class PointerWatcher {
     if (e.buttons & 1) {
       this.penDown = true; // перо коснулось полотна
       this.penBtnActive = false; // касание отменяет «парящий» жест кнопкой
+      this.clearTapTimer(); // отменяем отложенное меню вставки от одиночного тапа кнопки
     }
     this.onPointer(e.clientX, e.clientY); // запоминаем позицию пера (для команды)
     if (!this.onDrawSurface(e)) return; // не трогаем кнопки/панели Excalidraw

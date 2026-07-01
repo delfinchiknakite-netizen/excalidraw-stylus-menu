@@ -11,13 +11,15 @@ export interface MenuItem {
 export class InsertMenu {
   private overlay: HTMLElement | null = null;
   private menu: HTMLElement | null = null;
+  private onClose: (() => void) | null = null;
 
   constructor(
     private anchor: { x: number; y: number },
     private root: MenuItem[],
   ) {}
 
-  open(): void {
+  open(onClose?: () => void): void {
+    this.onClose = onClose ?? null;
     this.overlay = document.body.createDiv({ cls: "esm-overlay" });
     this.overlay.addEventListener(
       "pointerdown",
@@ -38,6 +40,9 @@ export class InsertMenu {
     this.overlay?.remove();
     this.overlay = null;
     this.menu = null;
+    const cb = this.onClose;
+    this.onClose = null;
+    cb?.();
   }
 
   private render(items: MenuItem[], isSub: boolean): void {

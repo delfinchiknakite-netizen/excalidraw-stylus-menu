@@ -87,6 +87,7 @@ var PointerWatcher = class {
       if (e.buttons & 1) {
         this.penDown = true;
         this.penBtnActive = false;
+        this.clearTapTimer();
       }
       this.onPointer(e.clientX, e.clientY);
       if (!this.onDrawSurface(e)) return;
@@ -310,8 +311,10 @@ var InsertMenu = class {
     this.root = root;
     this.overlay = null;
     this.menu = null;
+    this.onClose = null;
   }
-  open() {
+  open(onClose) {
+    this.onClose = onClose != null ? onClose : null;
     this.overlay = document.body.createDiv({ cls: "esm-overlay" });
     this.overlay.addEventListener(
       "pointerdown",
@@ -332,6 +335,9 @@ var InsertMenu = class {
     (_a = this.overlay) == null ? void 0 : _a.remove();
     this.overlay = null;
     this.menu = null;
+    const cb = this.onClose;
+    this.onClose = null;
+    cb == null ? void 0 : cb();
   }
   render(items, isSub) {
     const menu = this.menu;
@@ -405,13 +411,15 @@ async function commit(ea) {
   await ea.addElementsToView(false, true, true);
 }
 async function commitSelect(ea, id) {
-  var _a, _b;
+  var _a, _b, _c, _d;
   await ea.addElementsToView(false, true, true);
   if (!id) return;
   try {
     const api = (_a = ea.getExcalidrawAPI) == null ? void 0 : _a.call(ea);
-    const el = (_b = ea.getViewElements) == null ? void 0 : _b.call(ea).find((e) => e.id === id);
-    if (api && el) api.selectElements([el]);
+    if (!api) return;
+    (_d = api.updateScene) == null ? void 0 : _d.call(api, {
+      appState: { ...(_c = (_b = api.getAppState) == null ? void 0 : _b.call(api)) != null ? _c : {}, selectedElementIds: { [id]: true } }
+    });
   } catch (e) {
   }
 }
@@ -458,7 +466,6 @@ async function insertShape(ea, kind, x, y, s) {
   await commitSelect(ea, id);
 }
 async function insertEmbedOrImage(ea, app, x, y, s) {
-  var _a, _b;
   const file = await pickFile(app);
   if (!file) return;
   ea.reset();
@@ -469,13 +476,7 @@ async function insertEmbedOrImage(ea, app, x, y, s) {
     return;
   }
   const id = ea.addEmbeddable(x, y, s.defaultEmbedW, s.defaultEmbedH, `[[${file.path}]]`, void 0);
-  await commit(ea);
-  try {
-    const api = (_a = ea.getExcalidrawAPI) == null ? void 0 : _a.call(ea);
-    const el = (_b = ea.getViewElements) == null ? void 0 : _b.call(ea).find((e) => e.id === id);
-    if (api && el) api.selectElements([el]);
-  } catch (e) {
-  }
+  await commitSelect(ea, id);
 }
 function promptText(app, title) {
   return new Promise((resolve) => new TextPromptModal(app, title, resolve).open());
@@ -649,6 +650,10 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     this.clipboard = null;
     /** Ожидание второго тапа для стрелки: исходный объект (тап по цели создаёт стрелку). */
     this.pendingArrowFrom = null;
+    /** Единственное открытое меню (синглтон — чтобы меню не стекировались). */
+    this.activeMenu = null;
+    /** До этого времени (ms) новое меню не открываем — гасим дребезг после закрытия. */
+    this.menuSuppressUntil = 0;
   }
   async onload() {
     await this.loadSettings();
@@ -850,6 +855,24 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     const { x, y } = this.toScene(api, p.clientX, p.clientY);
     this.openInsertMenu(p, ea, x, y);
   }
+  /**
+   * Открыть меню как СИНГЛТОН: если меню уже открыто — этот вызов только закрывает его
+   * (тап-дисмисс) и НЕ открывает новое; сразу после закрытия действует короткое окно
+   * подавления, чтобы отложенный жест (напр. таймер тапа кнопки) не открыл меню заново.
+   */
+  presentMenu(ctx, items) {
+    if (this.activeMenu) {
+      this.activeMenu.close();
+      return;
+    }
+    if (Date.now() < this.menuSuppressUntil) return;
+    const menu = new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items);
+    this.activeMenu = menu;
+    menu.open(() => {
+      if (this.activeMenu === menu) this.activeMenu = null;
+      this.menuSuppressUntil = Date.now() + 350;
+    });
+  }
   openInsertMenu(ctx, ea, x, y) {
     const items = [
       { label: "\u270E  \u0422\u0435\u043A\u0441\u0442", onClick: () => insertText(ea, this.app, x, y) },
@@ -868,7 +891,7 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
         onClick: () => insertEmbedOrImage(ea, this.app, x, y, this.settings)
       }
     ];
-    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+    this.presentMenu(ctx, items);
   }
   /* ---------- меню действий над объектом (тап пером по объекту) ---------- */
   /** Контактный тап пером: если попали по объекту — меню действий; иначе ничего. */
@@ -914,7 +937,7 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     this.openObjectMenu(ctx, ea, hit);
   }
   openObjectMenu(ctx, ea, el) {
-    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, this.shapeMenuItems(ea, el)).open();
+    this.presentMenu(ctx, this.shapeMenuItems(ea, el));
   }
   /** Меню для фигуры (прямоугольник/эллипс/текст/картинка/заметка). */
   shapeMenuItems(ea, el) {
@@ -940,7 +963,7 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       { label: `\u29C9  \u0414\u0443\u0431\u043B\u0438\u0440\u043E\u0432\u0430\u0442\u044C (${els.length})`, onClick: () => this.duplicateElements(els) },
       { label: `\u{1F5D1}  \u0423\u0434\u0430\u043B\u0438\u0442\u044C (${els.length})`, onClick: () => this.deleteElements(els) }
     ];
-    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+    this.presentMenu(ctx, items);
   }
   /** Стрелка между двумя существующими объектами (с привязкой обоих концов). */
   async connectArrow(from, to) {

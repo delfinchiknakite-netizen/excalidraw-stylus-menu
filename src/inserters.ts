@@ -24,8 +24,12 @@ async function commitSelect(ea: any, id: string | undefined): Promise<void> {
   if (!id) return;
   try {
     const api = ea.getExcalidrawAPI?.();
-    const el = ea.getViewElements?.().find((e: any) => e.id === id);
-    if (api && el) api.selectElements([el]);
+    if (!api) return;
+    // Выделяем по id через appState — надёжнее, чем selectElements (не зависит от
+    // того, успел ли элемент попасть в getViewElements к этому моменту).
+    api.updateScene?.({
+      appState: { ...(api.getAppState?.() ?? {}), selectedElementIds: { [id]: true } },
+    });
   } catch {
     /* ignore */
   }
@@ -106,15 +110,7 @@ export async function insertEmbedOrImage(
   // как это делает штатная команда Excalidraw «Embed note». Если оставить url пустым
   // и полагаться на авто-вывод ссылки из файла, встройка может тут же исчезнуть.
   const id = ea.addEmbeddable(x, y, s.defaultEmbedW, s.defaultEmbedH, `[[${file.path}]]`, undefined);
-  await commit(ea);
-  // Выделяем вставленный блок — так же делает штатная команда (заодно «закрепляет» его).
-  try {
-    const api = ea.getExcalidrawAPI?.();
-    const el = ea.getViewElements?.().find((e: any) => e.id === id);
-    if (api && el) api.selectElements([el]);
-  } catch {
-    /* ignore */
-  }
+  await commitSelect(ea, id);
 }
 
 /* ---------- модальные окна ---------- */

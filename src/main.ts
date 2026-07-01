@@ -62,6 +62,10 @@ export default class StylusMenuPlugin extends Plugin {
   private clipboard: any[] | null = null;
   /** Ожидание второго тапа для стрелки: исходный объект (тап по цели создаёт стрелку). */
   private pendingArrowFrom: any | null = null;
+  /** Единственное открытое меню (синглтон — чтобы меню не стекировались). */
+  private activeMenu: InsertMenu | null = null;
+  /** До этого времени (ms) новое меню не открываем — гасим дребезг после закрытия. */
+  private menuSuppressUntil = 0;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -287,6 +291,25 @@ export default class StylusMenuPlugin extends Plugin {
     this.openInsertMenu(p, ea, x, y);
   }
 
+  /**
+   * Открыть меню как СИНГЛТОН: если меню уже открыто — этот вызов только закрывает его
+   * (тап-дисмисс) и НЕ открывает новое; сразу после закрытия действует короткое окно
+   * подавления, чтобы отложенный жест (напр. таймер тапа кнопки) не открыл меню заново.
+   */
+  private presentMenu(ctx: TriggerCtx, items: MenuItem[]): void {
+    if (this.activeMenu) {
+      this.activeMenu.close();
+      return;
+    }
+    if (Date.now() < this.menuSuppressUntil) return;
+    const menu = new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items);
+    this.activeMenu = menu;
+    menu.open(() => {
+      if (this.activeMenu === menu) this.activeMenu = null;
+      this.menuSuppressUntil = Date.now() + 350;
+    });
+  }
+
   private openInsertMenu(ctx: TriggerCtx, ea: any, x: number, y: number): void {
     const items: MenuItem[] = [
       { label: "✎  Текст", onClick: () => insertText(ea, this.app, x, y) },
@@ -305,7 +328,7 @@ export default class StylusMenuPlugin extends Plugin {
         onClick: () => insertEmbedOrImage(ea, this.app, x, y, this.settings),
       },
     ];
-    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+    this.presentMenu(ctx, items);
   }
 
   /* ---------- меню действий над объектом (тап пером по объекту) ---------- */
@@ -367,7 +390,7 @@ export default class StylusMenuPlugin extends Plugin {
 
   private openObjectMenu(ctx: TriggerCtx, ea: any, el: any): void {
     // Меню только для фигур (стрелки/линии в хит-тест не попадают).
-    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, this.shapeMenuItems(ea, el)).open();
+    this.presentMenu(ctx, this.shapeMenuItems(ea, el));
   }
 
   /** Меню для фигуры (прямоугольник/эллипс/текст/картинка/заметка). */
@@ -394,7 +417,7 @@ export default class StylusMenuPlugin extends Plugin {
       { label: `⧉  Дублировать (${els.length})`, onClick: () => this.duplicateElements(els) },
       { label: `🗑  Удалить (${els.length})`, onClick: () => this.deleteElements(els) },
     ];
-    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+    this.presentMenu(ctx, items);
   }
 
   /** Стрелка между двумя существующими объектами (с привязкой обоих концов). */
