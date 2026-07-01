@@ -84,12 +84,13 @@ esbuild.config.mjs  — сборка в main.js
   - иначе по тайм-ауту `doubleTapMs` → `onTrigger` → **меню вставки** (ждём возможный второй тап).
 
 ### Жесты при КАСАНИИ
-- Обычное касание = рисование Excalidraw (не мешаем).
-- Если `objectTapMenu` включён: касание взводит распознавание тапа (`armed`, снимок сцены `onArm`);
-  тап без движения → `onContactTap(ctx)` → `main.onObjectTap` (см. ниже).
+- Обычное касание с движением = рисование Excalidraw (не мешаем).
+- Касание взводит распознавание тапа (`armed`, снимок сцены `onArm`); тап без движения →
+  `onContactTap(ctx)` → `main.onObjectTap`: по фигуре/выделению (если `objectTapMenu`) — меню
+  действий, **по пустому месту — основное меню вставки**.
 - `contextmenu` с `pointerType==="pen"` — только `preventDefault` (гасим родное меню), меню не открываем.
 
-Прочие режимы триггера (в настройках, legacy): `tapempty`, `longpress`, `doubletap`, `barrel`.
+Режим один (`trigger: "penbutton"`, зафиксирован в `loadSettings`); прежние режимы удалены.
 
 ## Меню (`InsertMenu.ts`)
 
@@ -106,8 +107,9 @@ esbuild.config.mjs  — сборка в main.js
 
 ### Три меню (все в `main.ts`)
 1. **Меню вставки** (`openInsertMenu`) — Текст, Стикер, Фигуры›, Заметка/изображение.
-   Открывается **только** одиночным тапом кнопки при парении (`onTrigger`) или командой.
-   `onTrigger` сперва проверяет коннектор у края блока (`ConnectorController`), иначе — меню.
+   Открывается **двумя способами**: тап пером по пустому месту (`onObjectTap`, ветка «нет фигуры»)
+   и одиночный тап кнопки при парении (`onTrigger`) или командой. `onTrigger` сперва проверяет
+   коннектор у края блока (`ConnectorController`), иначе — меню.
 2. **Меню фигуры** (`onObjectTap` → `openObjectMenu`/`shapeMenuItems`) — тап пером по одиночной
    фигуре: «Стрелка к объекту…» (двухтаповый режим, `pendingArrowFrom` → `connectArrow`),
    «Стикер на объект», «Дублировать», «Удалить». **Стрелки/линии/freedraw исключены из хит-теста**
@@ -140,8 +142,9 @@ esbuild.config.mjs  — сборка в main.js
 
 ## Настройки (`settings.ts`)
 
-`trigger` (дефолт `penbutton`), `longPressMs`, `doubleTapMs`, `moveThresholdPx`, `edgeMarginPx`,
-`cleanupStrayDot`, `objectTapMenu`, `debugOverlay`, размеры фигур/встройки по умолчанию.
+`trigger` (всегда `penbutton`, выпадающего списка режимов в UI нет), `longPressMs`, `doubleTapMs`,
+`moveThresholdPx`, `edgeMarginPx`, `cleanupStrayDot`, `objectTapMenu`, `debugOverlay`, размеры
+фигур/встройки по умолчанию.
 
 ## Диагностика
 

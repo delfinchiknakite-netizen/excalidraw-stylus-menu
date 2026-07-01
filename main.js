@@ -53,15 +53,10 @@ var PointerWatcher = class {
     this.onDoubleTap = onDoubleTap;
     this.onHold = onHold;
     this.onContactTap = onContactTap;
-    this.longPressTimer = null;
     this.downX = 0;
     this.downY = 0;
     this.moved = false;
     this.armed = false;
-    this.lastTapTime = 0;
-    this.lastTapX = 0;
-    this.lastTapY = 0;
-    this.suppressContext = false;
     /** Перо в контакте с полотном (после pointerdown с buttons&1). */
     this.penDown = false;
     /** Парение: боковая кнопка зажата сейчас. */
@@ -70,11 +65,11 @@ var PointerWatcher = class {
     this.penBtnStartY = 0;
     /** Кнопку при парении сдвинули за порог — это не тап и не удержание. */
     this.penBtnMoved = false;
-    /** Меню инструментов уже открыто этим удержанием — отпускание ничего не делает. */
+    /** Удержанием уже открыто действие — отпускание ничего не делает. */
     this.penBtnHeldOpen = false;
-    /** Таймер удержания кнопки (→ меню инструментов). */
+    /** Таймер удержания кнопки (→ onHold). */
     this.holdTimer = null;
-    /** Таймер ожидания второго тапа (одиночный тап → меню вставки). */
+    /** Таймер ожидания второго тапа (одиночный тап → onTrigger). */
     this.tapTimer = null;
     /** Время предыдущего тапа кнопкой (для распознавания двойного). */
     this.lastBtnTap = 0;
@@ -87,66 +82,23 @@ var PointerWatcher = class {
       if (e.buttons & 1) {
         this.penDown = true;
         this.penBtnActive = false;
+        this.clearHoldTimer();
         this.clearTapTimer();
       }
       this.onPointer(e.clientX, e.clientY);
       if (!this.onDrawSurface(e)) return;
-      if (s.trigger === "penbutton") {
-        this.penBtnActive = false;
-        this.clearHoldTimer();
-        if (e.buttons & 1 && s.objectTapMenu) {
-          this.downX = e.clientX;
-          this.downY = e.clientY;
-          this.moved = false;
-          this.armed = true;
-          this.onArm();
-        }
-        return;
-      }
-      if (s.trigger === "tapempty") {
-        if (!(e.buttons & 1)) return;
+      if (e.buttons & 1) {
         this.downX = e.clientX;
         this.downY = e.clientY;
         this.moved = false;
         this.armed = true;
         this.onArm();
-        return;
-      }
-      if (s.trigger === "barrel") {
-        if (e.buttons & 2) this.fire(e);
-        return;
-      }
-      if (s.trigger === "longpress") {
-        if (!(e.buttons & 1)) return;
-        this.downX = e.clientX;
-        this.downY = e.clientY;
-        this.onArm();
-        this.clearTimer();
-        this.longPressTimer = window.setTimeout(() => {
-          this.longPressTimer = null;
-          this.onTrigger({ clientX: this.downX, clientY: this.downY });
-        }, s.longPressMs);
-        return;
-      }
-      if (s.trigger === "doubletap") {
-        if (!(e.buttons & 1)) return;
-        const dt = e.timeStamp - this.lastTapTime;
-        const dist = Math.hypot(e.clientX - this.lastTapX, e.clientY - this.lastTapY);
-        if (dt < s.doubleTapMs && dist < s.moveThresholdPx) {
-          this.lastTapTime = 0;
-          this.fire(e);
-        } else {
-          this.lastTapTime = e.timeStamp;
-          this.lastTapX = e.clientX;
-          this.lastTapY = e.clientY;
-        }
-        return;
       }
     };
     this.move = (e) => {
       if (this.penLike(e)) this.onPointer(e.clientX, e.clientY);
       const s = this.getSettings();
-      if (s.trigger === "penbutton" && e.pointerType === "pen" && !this.penDown) {
+      if (e.pointerType === "pen" && !this.penDown) {
         const pressed = !!(e.buttons & 1);
         if (pressed && !this.penBtnActive) {
           this.penBtnActive = true;
@@ -167,45 +119,27 @@ var PointerWatcher = class {
           if (!this.penBtnHeldOpen && !this.penBtnMoved) this.handleBtnTap(e);
         }
       }
-      const thr = s.moveThresholdPx;
       if (this.armed) {
         const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
-        if (dist > thr) this.moved = true;
-      }
-      if (this.longPressTimer != null) {
-        const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
-        if (dist > thr) this.clearTimer();
+        if (dist > s.moveThresholdPx) this.moved = true;
       }
     };
     this.up = () => {
-      this.clearTimer();
       this.penDown = false;
       if (this.armed) {
         const wasTap = !this.moved;
         this.armed = false;
-        if (wasTap) {
-          const ctx = { clientX: this.downX, clientY: this.downY };
-          if (this.getSettings().trigger === "penbutton") this.onContactTap(ctx);
-          else this.onTrigger(ctx);
-        }
+        if (wasTap) this.onContactTap({ clientX: this.downX, clientY: this.downY });
       }
     };
     this.cancel = () => {
-      this.clearTimer();
       this.clearHoldTimer();
       this.penDown = false;
       this.penBtnActive = false;
       this.armed = false;
     };
     this.ctx = (e) => {
-      const s = this.getSettings();
-      if (s.trigger === "penbutton" && e.pointerType === "pen") {
-        e.preventDefault();
-        e.stopPropagation();
-        return;
-      }
-      if (this.suppressContext) {
-        this.suppressContext = false;
+      if (e.pointerType === "pen") {
         e.preventDefault();
         e.stopPropagation();
       }
@@ -224,7 +158,6 @@ var PointerWatcher = class {
     this.el.removeEventListener("pointerup", this.up, true);
     this.el.removeEventListener("pointercancel", this.cancel, true);
     this.el.removeEventListener("contextmenu", this.ctx, true);
-    this.clearTimer();
     this.clearHoldTimer();
     this.clearTapTimer();
   }
@@ -234,8 +167,7 @@ var PointerWatcher = class {
   }
   /**
    * Реагируем только на касания собственно полотна Excalidraw (<canvas>), а не
-   * элементов интерфейса (панель инструментов, кнопки, меню) — иначе тап по
-   * кнопкам Excalidraw распознавался бы как «тап по пустому месту».
+   * элементов интерфейса (панель инструментов, кнопки, меню).
    */
   onDrawSurface(e) {
     const t = e.target;
@@ -243,7 +175,7 @@ var PointerWatcher = class {
   }
   /**
    * Отпустили кнопку при парении без движения и без удержания: это тап.
-   * Второй такой тап в окне doubleTapMs → перо⇄ластик, иначе по тайм-ауту → меню вставки.
+   * Второй такой тап в окне doubleTapMs → onDoubleTap, иначе по тайм-ауту → onTrigger.
    */
   handleBtnTap(e) {
     const s = this.getSettings();
@@ -264,7 +196,7 @@ var PointerWatcher = class {
       this.onTrigger({ clientX: x, clientY: y });
     }, s.doubleTapMs);
   }
-  /** Кнопку держат на месте дольше longPressMs → меню инструментов у кончика пера. */
+  /** Кнопку держат на месте дольше longPressMs → onHold (вставить). */
   startHoldTimer() {
     this.clearHoldTimer();
     const x = this.penBtnStartX;
@@ -286,20 +218,6 @@ var PointerWatcher = class {
     if (this.tapTimer != null) {
       clearTimeout(this.tapTimer);
       this.tapTimer = null;
-    }
-  }
-  fire(e) {
-    var _a;
-    e.preventDefault();
-    e.stopPropagation();
-    (_a = e.stopImmediatePropagation) == null ? void 0 : _a.call(e);
-    if (e.pointerType === "mouse") this.suppressContext = true;
-    this.onTrigger({ clientX: e.clientX, clientY: e.clientY });
-  }
-  clearTimer() {
-    if (this.longPressTimer != null) {
-      clearTimeout(this.longPressTimer);
-      this.longPressTimer = null;
     }
   }
 };
@@ -357,7 +275,6 @@ var InsertMenu = class {
       const row = menu.createDiv({ cls: "esm-item" });
       row.setText(it.label);
       row.addEventListener("pointerup", async (e) => {
-        var _a;
         e.stopPropagation();
         e.preventDefault();
         if (it.children) {
@@ -366,10 +283,13 @@ var InsertMenu = class {
           return;
         }
         this.close();
-        try {
-          await ((_a = it.onClick) == null ? void 0 : _a.call(it));
-        } catch (err) {
-          console.error("[excalidraw-stylus-menu] insert failed", err);
+        const cb = it.onClick;
+        if (cb) {
+          window.setTimeout(() => {
+            void Promise.resolve(cb()).catch(
+              (err) => console.error("[excalidraw-stylus-menu] insert failed", err)
+            );
+          }, 0);
         }
       });
     }
@@ -807,15 +727,6 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     const elements = ((_b = (_a = api.getSceneElements) == null ? void 0 : _a.call(api)) != null ? _b : []).filter(
       (el) => el && !el.isDeleted && hasBBox(el)
     );
-    const margin = this.settings.edgeMarginPx;
-    const onEdge = elements.some((el) => nearEdge(sceneX, sceneY, el, margin));
-    if (this.settings.trigger === "tapempty" && !onEdge) {
-      const onObject = elements.some((el) => contains(sceneX, sceneY, el, 0));
-      if (onObject) {
-        this.clearSnapshot();
-        return;
-      }
-    }
     const handled = this.connector.handleTrigger({
       ea,
       api,
@@ -894,7 +805,10 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     this.presentMenu(ctx, items);
   }
   /* ---------- меню действий над объектом (тап пером по объекту) ---------- */
-  /** Контактный тап пером: если попали по объекту — меню действий; иначе ничего. */
+  /**
+   * Контактный тап пером: по фигуре/выделению — меню действий (если включено),
+   * по пустому месту — основное меню вставки.
+   */
   onObjectTap(ctx) {
     var _a, _b, _c, _d;
     const ea = getEA(this.app);
@@ -922,19 +836,22 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       else new import_obsidian3.Notice("\u0421\u0442\u0440\u0435\u043B\u043A\u0430 \u043E\u0442\u043C\u0435\u043D\u0435\u043D\u0430.");
       return;
     }
-    const selIds = (_d = ((_c = (_b = api.getAppState) == null ? void 0 : _b.call(api)) != null ? _c : {}).selectedElementIds) != null ? _d : {};
-    const selected = all.filter((el) => selIds[el.id]);
-    if (selected.length > 1 && selected.some((el) => !LINEAR.includes(el.type) && contains(sx, sy, el, 0))) {
-      this.scheduleCleanup();
-      this.openSelectionMenu(ctx, selected);
-      return;
-    }
-    if (!hit) {
-      this.clearSnapshot();
-      return;
+    if (this.settings.objectTapMenu) {
+      const selIds = (_d = ((_c = (_b = api.getAppState) == null ? void 0 : _b.call(api)) != null ? _c : {}).selectedElementIds) != null ? _d : {};
+      const selected = all.filter((el) => selIds[el.id]);
+      if (selected.length > 1 && selected.some((el) => !LINEAR.includes(el.type) && contains(sx, sy, el, 0))) {
+        this.scheduleCleanup();
+        this.openSelectionMenu(ctx, selected);
+        return;
+      }
+      if (hit) {
+        this.scheduleCleanup();
+        this.openObjectMenu(ctx, ea, hit);
+        return;
+      }
     }
     this.scheduleCleanup();
-    this.openObjectMenu(ctx, ea, hit);
+    this.openInsertMenu(ctx, ea, sx, sy);
   }
   openObjectMenu(ctx, ea, el) {
     this.presentMenu(ctx, this.shapeMenuItems(ea, el));
@@ -1194,6 +1111,7 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings.trigger = "penbutton";
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -1218,12 +1136,10 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    new import_obsidian3.Setting(containerEl).setName("\u0416\u0435\u0441\u0442-\u0442\u0440\u0438\u0433\u0433\u0435\u0440").setDesc("\u0427\u0435\u043C \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0442\u044C \u043C\u0435\u043D\u044E \u0432\u0441\u0442\u0430\u0432\u043A\u0438 \u043F\u0435\u0440\u043E\u043C.").addDropdown(
-      (d) => d.addOption("penbutton", "\u041A\u043D\u043E\u043F\u043A\u0430 S Pen \u043F\u0440\u0438 \u043F\u0430\u0440\u0435\u043D\u0438\u0438 (\u0442\u0430\u043F\u2192\u043C\u0435\u043D\u044E, 2\xD7\u2192\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C, \u0443\u0434\u0435\u0440\u0436.\u2192\u0432\u0441\u0442\u0430\u0432\u0438\u0442\u044C)").addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435 (barrel)").setValue(this.plugin.settings.trigger).onChange(async (v) => {
-        this.plugin.settings.trigger = v;
-        await this.plugin.saveSettings();
-      })
-    );
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "\u041E\u0441\u043D\u043E\u0432\u043D\u043E\u0435 \u043C\u0435\u043D\u044E \u0432\u0441\u0442\u0430\u0432\u043A\u0438 \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u0434\u0432\u0443\u043C\u044F \u0441\u043F\u043E\u0441\u043E\u0431\u0430\u043C\u0438: \u0442\u0430\u043F \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443 \u0445\u043E\u043B\u0441\u0442\u0430 \u0438 \u043E\u0434\u0438\u043D\u043E\u0447\u043D\u044B\u0439 \u0442\u0430\u043F \u0431\u043E\u043A\u043E\u0432\u043E\u0439 \u043A\u043D\u043E\u043F\u043A\u043E\u0439 S Pen \u043F\u0440\u0438 \u043F\u0430\u0440\u0435\u043D\u0438\u0438. \u0414\u0432\u043E\u0439\u043D\u043E\u0439 \u0442\u0430\u043F \u043A\u043D\u043E\u043F\u043A\u043E\u0439 \u2014 \u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C, \u0443\u0434\u0435\u0440\u0436\u0430\u043D\u0438\u0435 \u2014 \u0432\u0441\u0442\u0430\u0432\u0438\u0442\u044C."
+    });
     new import_obsidian3.Setting(containerEl).setName("\u041C\u0435\u043D\u044E \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0439 \u043F\u043E \u0442\u0430\u043F\u0443 \u043D\u0430 \u043E\u0431\u044A\u0435\u043A\u0442").setDesc("\u0422\u0430\u043F \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u0444\u0438\u0433\u0443\u0440\u0435/\u043E\u0431\u044A\u0435\u043A\u0442\u0443 \u2192 \u043C\u0435\u043D\u044E: \u0434\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u0442\u0435\u043A\u0441\u0442, \u0441\u0442\u0440\u0435\u043B\u043A\u0430 \u043E\u0442 \u043E\u0431\u044A\u0435\u043A\u0442\u0430, \u0441\u0442\u0438\u043A\u0435\u0440, \u0434\u0443\u0431\u043B\u0438\u0440\u043E\u0432\u0430\u0442\u044C, \u0443\u0434\u0430\u043B\u0438\u0442\u044C.").addToggle(
       (t) => t.setValue(this.plugin.settings.objectTapMenu).onChange(async (v) => {
         this.plugin.settings.objectTapMenu = v;

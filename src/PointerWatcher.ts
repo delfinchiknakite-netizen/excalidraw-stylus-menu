@@ -13,27 +13,23 @@ type Action = () => void;
 
 /**
  * Слушает pointer-события на элементе вью Excalidraw в capture-фазе (чтобы
- * опередить React-обработчики холста) и распознаёт настроенный жест-триггер.
+ * опередить React-обработчики холста) и распознаёт жесты пера S Pen.
  *
  * Палец (pointerType="touch") никогда не перехватывается — он остаётся для
  * рисования и навигации. Перехватывается только перо (и мышь — для отладки на ПК).
  *
- * Режим "tapempty" (по умолчанию): не глушит событие — даёт Excalidraw рисовать.
- * Если перо опустилось и поднялось без движения (тап), вызывает onTrigger; дальше
- * плагин сам решает (по hit-test), открыть меню (пустое место), коннектор (край
- * блока) или ничего (по объекту). Артефактная точка убирается отдельной очисткой.
- * onArm вызывается на pointerdown — чтобы плагин снял снимок сцены ДО рисования.
+ * Единственный режим. Различаем ПАРЕНИЕ (перо над холстом, `!penDown`) и КАСАНИЕ:
+ * - парение + боковая кнопка (`buttons&1` при парении): одиночный тап → onTrigger
+ *   (меню вставки), двойной тап → onDoubleTap (копировать), удержание → onHold (вставить);
+ * - касание без движения (тап) → onContactTap: плагин по hit-test открывает меню
+ *   объекта/выделения либо меню вставки (по пустому месту).
+ * onArm вызывается на касании — чтобы плагин снял снимок сцены до артефактной точки.
  */
 export class PointerWatcher {
-  private longPressTimer: number | null = null;
   private downX = 0;
   private downY = 0;
   private moved = false;
   private armed = false;
-  private lastTapTime = 0;
-  private lastTapX = 0;
-  private lastTapY = 0;
-  private suppressContext = false;
   /** Перо в контакте с полотном (после pointerdown с buttons&1). */
   private penDown = false;
   /** Парение: боковая кнопка зажата сейчас. */
@@ -42,11 +38,11 @@ export class PointerWatcher {
   private penBtnStartY = 0;
   /** Кнопку при парении сдвинули за порог — это не тап и не удержание. */
   private penBtnMoved = false;
-  /** Меню инструментов уже открыто этим удержанием — отпускание ничего не делает. */
+  /** Удержанием уже открыто действие — отпускание ничего не делает. */
   private penBtnHeldOpen = false;
-  /** Таймер удержания кнопки (→ меню инструментов). */
+  /** Таймер удержания кнопки (→ onHold). */
   private holdTimer: number | null = null;
-  /** Таймер ожидания второго тапа (одиночный тап → меню вставки). */
+  /** Таймер ожидания второго тапа (одиночный тап → onTrigger). */
   private tapTimer: number | null = null;
   /** Время предыдущего тапа кнопкой (для распознавания двойного). */
   private lastBtnTap = 0;
@@ -77,7 +73,6 @@ export class PointerWatcher {
     this.el.removeEventListener("pointerup", this.up, true);
     this.el.removeEventListener("pointercancel", this.cancel, true);
     this.el.removeEventListener("contextmenu", this.ctx, true);
-    this.clearTimer();
     this.clearHoldTimer();
     this.clearTapTimer();
   }
@@ -89,8 +84,7 @@ export class PointerWatcher {
 
   /**
    * Реагируем только на касания собственно полотна Excalidraw (<canvas>), а не
-   * элементов интерфейса (панель инструментов, кнопки, меню) — иначе тап по
-   * кнопкам Excalidraw распознавался бы как «тап по пустому месту».
+   * элементов интерфейса (панель инструментов, кнопки, меню).
    */
   private onDrawSurface(e: PointerEvent): boolean {
     const t = e.target as HTMLElement | null;
@@ -106,67 +100,20 @@ export class PointerWatcher {
     if (e.buttons & 1) {
       this.penDown = true; // перо коснулось полотна
       this.penBtnActive = false; // касание отменяет «парящий» жест кнопкой
-      this.clearTapTimer(); // отменяем отложенное меню вставки от одиночного тапа кнопки
+      this.clearHoldTimer();
+      this.clearTapTimer(); // отменяем отложенное меню от одиночного тапа кнопки
     }
     this.onPointer(e.clientX, e.clientY); // запоминаем позицию пера (для команды)
     if (!this.onDrawSurface(e)) return; // не трогаем кнопки/панели Excalidraw
 
-    if (s.trigger === "penbutton") {
-      // Жесты кнопкой — только при ПАРЕНИИ (см. move). Сбрасываем «парящее» состояние.
-      this.penBtnActive = false;
-      this.clearHoldTimer();
-      // Касание: взводим распознавание тапа по объекту (down+up без движения).
-      if (e.buttons & 1 && s.objectTapMenu) {
-        this.downX = e.clientX;
-        this.downY = e.clientY;
-        this.moved = false;
-        this.armed = true;
-        this.onArm(); // снимок сцены — убрать точку-артефакт от тапа
-      }
-      return;
-    }
-
-    if (s.trigger === "tapempty") {
-      if (!(e.buttons & 1)) return; // только контакт пера/ЛКМ
+    // Касание: взводим распознавание тапа (down+up без движения). Дальше onContactTap
+    // сам решает — меню объекта/выделения или меню вставки (по пустому месту).
+    if (e.buttons & 1) {
       this.downX = e.clientX;
       this.downY = e.clientY;
       this.moved = false;
       this.armed = true;
-      this.onArm(); // снимок сцены до того, как Excalidraw создаст точку
-      return; // НЕ preventDefault — обычное рисование продолжается
-    }
-
-    if (s.trigger === "barrel") {
-      if (e.buttons & 2) this.fire(e);
-      return;
-    }
-
-    if (s.trigger === "longpress") {
-      if (!(e.buttons & 1)) return;
-      this.downX = e.clientX;
-      this.downY = e.clientY;
-      this.onArm();
-      this.clearTimer();
-      this.longPressTimer = window.setTimeout(() => {
-        this.longPressTimer = null;
-        this.onTrigger({ clientX: this.downX, clientY: this.downY });
-      }, s.longPressMs);
-      return;
-    }
-
-    if (s.trigger === "doubletap") {
-      if (!(e.buttons & 1)) return;
-      const dt = e.timeStamp - this.lastTapTime;
-      const dist = Math.hypot(e.clientX - this.lastTapX, e.clientY - this.lastTapY);
-      if (dt < s.doubleTapMs && dist < s.moveThresholdPx) {
-        this.lastTapTime = 0;
-        this.fire(e);
-      } else {
-        this.lastTapTime = e.timeStamp;
-        this.lastTapX = e.clientX;
-        this.lastTapY = e.clientY;
-      }
-      return;
+      this.onArm(); // снимок сцены — убрать точку-артефакт от тапа
     }
   };
 
@@ -174,12 +121,11 @@ export class PointerWatcher {
     if (this.penLike(e)) this.onPointer(e.clientX, e.clientY);
     const s = this.getSettings();
 
-    // penbutton: кнопка во время ПАРЕНИЯ (без касания) приходит как buttons&1.
+    // Кнопка во время ПАРЕНИЯ (без касания) приходит как buttons&1.
     // Одиночный тап → меню вставки; двойной тап → копировать; удержание → вставить.
-    if (s.trigger === "penbutton" && e.pointerType === "pen" && !this.penDown) {
+    if (e.pointerType === "pen" && !this.penDown) {
       const pressed = !!(e.buttons & 1);
       if (pressed && !this.penBtnActive) {
-        // нажали кнопку
         this.penBtnActive = true;
         this.penBtnMoved = false;
         this.penBtnHeldOpen = false;
@@ -187,49 +133,34 @@ export class PointerWatcher {
         this.penBtnStartY = e.clientY;
         this.startHoldTimer();
       } else if (pressed && this.penBtnActive && !this.penBtnHeldOpen) {
-        // держим: если ушли за порог — это не тап и не удержание (отменяем меню инструментов)
         const dist = Math.hypot(e.clientX - this.penBtnStartX, e.clientY - this.penBtnStartY);
         if (dist > s.moveThresholdPx) {
           this.penBtnMoved = true;
           this.clearHoldTimer();
         }
       } else if (this.penBtnActive && !pressed) {
-        // отпустили кнопку
         this.penBtnActive = false;
         this.clearHoldTimer();
         if (!this.penBtnHeldOpen && !this.penBtnMoved) this.handleBtnTap(e);
       }
     }
 
-    const thr = s.moveThresholdPx;
     if (this.armed) {
       const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
-      if (dist > thr) this.moved = true;
-    }
-    if (this.longPressTimer != null) {
-      const dist = Math.hypot(e.clientX - this.downX, e.clientY - this.downY);
-      if (dist > thr) this.clearTimer();
+      if (dist > s.moveThresholdPx) this.moved = true;
     }
   };
 
   private up = (): void => {
-    this.clearTimer();
     this.penDown = false;
     if (this.armed) {
       const wasTap = !this.moved;
       this.armed = false;
-      if (wasTap) {
-        const ctx = { clientX: this.downX, clientY: this.downY };
-        // В penbutton контактный тап ведём в меню действий над объектом (по hit-test),
-        // в остальных режимах — обычный триггер (меню/коннектор).
-        if (this.getSettings().trigger === "penbutton") this.onContactTap(ctx);
-        else this.onTrigger(ctx);
-      }
+      if (wasTap) this.onContactTap({ clientX: this.downX, clientY: this.downY });
     }
   };
 
   private cancel = (): void => {
-    this.clearTimer();
     this.clearHoldTimer();
     this.penDown = false;
     this.penBtnActive = false;
@@ -237,18 +168,9 @@ export class PointerWatcher {
   };
 
   private ctx = (e: Event): void => {
-    // penbutton: кнопка S Pen в момент КАСАНИЯ приходит как contextmenu type=pen.
-    // Меню по ней НЕ открываем (только при парении) — лишь гасим родное контекстное меню,
-    // чтобы оно не мешало рисованию пером.
-    const s = this.getSettings();
-    if (s.trigger === "penbutton" && (e as PointerEvent).pointerType === "pen") {
-      e.preventDefault();
-      e.stopPropagation();
-      return;
-    }
-    // Гасим контекстное меню после barrel-триггера мышью на ПК.
-    if (this.suppressContext) {
-      this.suppressContext = false;
+    // Кнопка S Pen в момент КАСАНИЯ приходит как contextmenu type=pen. Меню по ней не
+    // открываем — лишь гасим родное контекстное меню, чтобы оно не мешало рисованию.
+    if ((e as PointerEvent).pointerType === "pen") {
       e.preventDefault();
       e.stopPropagation();
     }
@@ -256,7 +178,7 @@ export class PointerWatcher {
 
   /**
    * Отпустили кнопку при парении без движения и без удержания: это тап.
-   * Второй такой тап в окне doubleTapMs → перо⇄ластик, иначе по тайм-ауту → меню вставки.
+   * Второй такой тап в окне doubleTapMs → onDoubleTap, иначе по тайм-ауту → onTrigger.
    */
   private handleBtnTap(e: PointerEvent): void {
     const s = this.getSettings();
@@ -278,7 +200,7 @@ export class PointerWatcher {
     }, s.doubleTapMs);
   }
 
-  /** Кнопку держат на месте дольше longPressMs → меню инструментов у кончика пера. */
+  /** Кнопку держат на месте дольше longPressMs → onHold (вставить). */
   private startHoldTimer(): void {
     this.clearHoldTimer();
     const x = this.penBtnStartX;
@@ -302,21 +224,6 @@ export class PointerWatcher {
     if (this.tapTimer != null) {
       clearTimeout(this.tapTimer);
       this.tapTimer = null;
-    }
-  }
-
-  private fire(e: PointerEvent): void {
-    e.preventDefault();
-    e.stopPropagation();
-    (e as any).stopImmediatePropagation?.();
-    if (e.pointerType === "mouse") this.suppressContext = true;
-    this.onTrigger({ clientX: e.clientX, clientY: e.clientY });
-  }
-
-  private clearTimer(): void {
-    if (this.longPressTimer != null) {
-      clearTimeout(this.longPressTimer);
-      this.longPressTimer = null;
     }
   }
 }

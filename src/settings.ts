@@ -1,11 +1,11 @@
-export type TriggerGesture = "penbutton" | "tapempty" | "barrel" | "longpress" | "doubletap";
+export type TriggerGesture = "penbutton";
 
 export interface StylusMenuSettings {
-  /** Жест, открывающий меню вставки. */
+  /** Режим жестов (единственный — penbutton). Оставлен для совместимости с сохранёнными данными. */
   trigger: TriggerGesture;
-  /** Порог долгого нажатия, мс (для trigger="longpress"). */
+  /** Порог удержания кнопки при парении, мс (удержание → вставить). */
   longPressMs: number;
-  /** Окно двойного касания, мс (для trigger="doubletap"). */
+  /** Окно двойного тапа кнопкой, мс (двойной тап → копировать); также задержка одиночного тапа. */
   doubleTapMs: number;
   /** Допустимое движение пера, px, чтобы жест ещё считался "на месте" (тап, не штрих). */
   moveThresholdPx: number;

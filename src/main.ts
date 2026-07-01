@@ -1,9 +1,9 @@
 import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
-import { DEFAULT_SETTINGS, StylusMenuSettings, TriggerGesture } from "./settings";
+import { DEFAULT_SETTINGS, StylusMenuSettings } from "./settings";
 import { PointerWatcher, TriggerCtx } from "./PointerWatcher";
 import { InsertMenu, MenuItem } from "./InsertMenu";
 import { insertEmbedOrImage, insertShape, insertSticker, insertText } from "./inserters";
-import { ConnectorController, contains, nearEdge } from "./connector";
+import { ConnectorController, contains } from "./connector";
 
 const EXCALIDRAW_VIEW = "excalidraw";
 const STRAY_TYPES = ["freedraw", "draw", "line", "arrow"];
@@ -237,18 +237,6 @@ export default class StylusMenuPlugin extends Plugin {
       (el: any) => el && !el.isDeleted && hasBBox(el),
     );
 
-    const margin = this.settings.edgeMarginPx;
-    const onEdge = elements.some((el: any) => nearEdge(sceneX, sceneY, el, margin));
-
-    // tapempty: тап по объекту (не по краю) — отдаём обычному поведению Excalidraw.
-    if (this.settings.trigger === "tapempty" && !onEdge) {
-      const onObject = elements.some((el: any) => contains(sceneX, sceneY, el, 0));
-      if (onObject) {
-        this.clearSnapshot();
-        return;
-      }
-    }
-
     const handled = this.connector.handleTrigger({
       ea,
       api,
@@ -333,7 +321,10 @@ export default class StylusMenuPlugin extends Plugin {
 
   /* ---------- меню действий над объектом (тап пером по объекту) ---------- */
 
-  /** Контактный тап пером: если попали по объекту — меню действий; иначе ничего. */
+  /**
+   * Контактный тап пером: по фигуре/выделению — меню действий (если включено),
+   * по пустому месту — основное меню вставки.
+   */
   private onObjectTap(ctx: TriggerCtx): void {
     const ea = getEA(this.app);
     const api = getApi(this.app);
@@ -366,26 +357,30 @@ export default class StylusMenuPlugin extends Plugin {
       return;
     }
 
-    // Приоритет: тап по МНОЖЕСТВЕННОМУ выделению → меню действий над набором (дублировать/удалить).
-    // Требуем >1 элемента и попадание по выделенной ФИГУРЕ (не по bbox стрелки — он огромный,
-    // иначе авто-выделенная стрелка перехватывала бы тапы). Действие применяется ко всему набору.
-    const selIds = (api.getAppState?.() ?? {}).selectedElementIds ?? {};
-    const selected = all.filter((el: any) => selIds[el.id]);
-    if (
-      selected.length > 1 &&
-      selected.some((el: any) => !LINEAR.includes(el.type) && contains(sx, sy, el, 0))
-    ) {
-      this.scheduleCleanup();
-      this.openSelectionMenu(ctx, selected);
-      return;
+    if (this.settings.objectTapMenu) {
+      // Тап по МНОЖЕСТВЕННОМУ выделению → меню действий над набором (дублировать/удалить).
+      // Требуем >1 элемента и попадание по выделенной ФИГУРЕ (не по bbox стрелки — он огромный).
+      const selIds = (api.getAppState?.() ?? {}).selectedElementIds ?? {};
+      const selected = all.filter((el: any) => selIds[el.id]);
+      if (
+        selected.length > 1 &&
+        selected.some((el: any) => !LINEAR.includes(el.type) && contains(sx, sy, el, 0))
+      ) {
+        this.scheduleCleanup();
+        this.openSelectionMenu(ctx, selected);
+        return;
+      }
+      // Тап по одиночной фигуре → меню действий над ней.
+      if (hit) {
+        this.scheduleCleanup();
+        this.openObjectMenu(ctx, ea, hit);
+        return;
+      }
     }
 
-    if (!hit) {
-      this.clearSnapshot(); // по пустому месту — оставляем поведение Excalidraw
-      return;
-    }
+    // Тап по пустому месту (или меню объекта выключено) → основное меню вставки.
     this.scheduleCleanup(); // убрать точку-артефакт от самого тапа
-    this.openObjectMenu(ctx, ea, hit);
+    this.openInsertMenu(ctx, ea, sx, sy);
   }
 
   private openObjectMenu(ctx: TriggerCtx, ea: any, el: any): void {
@@ -653,6 +648,7 @@ export default class StylusMenuPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings.trigger = "penbutton"; // единственный режим (старые значения игнорируем)
   }
 
   async saveSettings(): Promise<void> {
@@ -693,22 +689,13 @@ class StylusMenuSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl)
-      .setName("Жест-триггер")
-      .setDesc("Чем открывать меню вставки пером.")
-      .addDropdown((d) =>
-        d
-          .addOption("penbutton", "Кнопка S Pen при парении (тап→меню, 2×→копировать, удерж.→вставить)")
-          .addOption("tapempty", "Касание пером по пустому месту")
-          .addOption("longpress", "Долгое нажатие пером")
-          .addOption("doubletap", "Двойное касание пером")
-          .addOption("barrel", "Боковая кнопка S Pen + касание (barrel)")
-          .setValue(this.plugin.settings.trigger)
-          .onChange(async (v) => {
-            this.plugin.settings.trigger = v as TriggerGesture;
-            await this.plugin.saveSettings();
-          }),
-      );
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "Основное меню вставки открывается двумя способами: тап пером по пустому месту холста " +
+        "и одиночный тап боковой кнопкой S Pen при парении. Двойной тап кнопкой — копировать, " +
+        "удержание — вставить.",
+    });
 
     new Setting(containerEl)
       .setName("Меню действий по тапу на объект")

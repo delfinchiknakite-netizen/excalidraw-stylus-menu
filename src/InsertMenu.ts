@@ -73,10 +73,16 @@ export class InsertMenu {
           return;
         }
         this.close();
-        try {
-          await it.onClick?.();
-        } catch (err) {
-          console.error("[excalidraw-stylus-menu] insert failed", err);
+        // Запускаем действие на СЛЕДУЮЩЕМ тике: если onClick открывает модалку (выбор
+        // файла/ввод текста), она не должна попасть под завершение текущего pointer-события
+        // (иначе модалка «открывается и сразу закрывается»).
+        const cb = it.onClick;
+        if (cb) {
+          window.setTimeout(() => {
+            void Promise.resolve(cb()).catch((err) =>
+              console.error("[excalidraw-stylus-menu] insert failed", err),
+            );
+          }, 0);
         }
       });
     }
