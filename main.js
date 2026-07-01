@@ -477,17 +477,6 @@ async function insertEmbedOrImage(ea, app, x, y, s) {
   } catch (e) {
   }
 }
-async function addTextToObject(ea, app, el) {
-  var _a, _b, _c, _d;
-  const text = await promptText(app, "\u0422\u0435\u043A\u0441\u0442");
-  if (text == null) return;
-  ea.reset();
-  ea.setView("active");
-  const cx = ((_a = el.x) != null ? _a : 0) + ((_b = el.width) != null ? _b : 0) / 2 - 40;
-  const cy = ((_c = el.y) != null ? _c : 0) + ((_d = el.height) != null ? _d : 0) / 2 - 12;
-  const id = ea.addText(cx, cy, text, { autoResize: true });
-  await commitSelect(ea, id);
-}
 function promptText(app, title) {
   return new Promise((resolve) => new TextPromptModal(app, title, resolve).open());
 }
@@ -924,7 +913,6 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     const cx = ((_a = el.x) != null ? _a : 0) + ((_b = el.width) != null ? _b : 0) / 2;
     const cy = ((_c = el.y) != null ? _c : 0) + ((_d = el.height) != null ? _d : 0) / 2;
     return [
-      { label: "\u270E  \u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u0442\u0435\u043A\u0441\u0442", onClick: () => addTextToObject(ea, this.app, el) },
       {
         label: "\u2192  \u0421\u0442\u0440\u0435\u043B\u043A\u0430 \u043A \u043E\u0431\u044A\u0435\u043A\u0442\u0443\u2026",
         onClick: () => {
@@ -939,8 +927,11 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
   }
   /** Меню для стрелки/линии. */
   arrowMenuItems(ea, el) {
+    var _a, _b, _c, _d;
+    const cx = ((_a = el.x) != null ? _a : 0) + ((_b = el.width) != null ? _b : 0) / 2;
+    const cy = ((_c = el.y) != null ? _c : 0) + ((_d = el.height) != null ? _d : 0) / 2;
     return [
-      { label: "\u270E  \u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u0442\u0435\u043A\u0441\u0442", onClick: () => addTextToObject(ea, this.app, el) },
+      { label: "\u25A2  \u0421\u0442\u0438\u043A\u0435\u0440", onClick: () => insertSticker(ea, this.app, cx, cy) },
       {
         label: "\u21A3  \u041D\u0430\u043A\u043E\u043D\u0435\u0447\u043D\u0438\u043A\u0438 \u203A",
         children: [
@@ -958,12 +949,12 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
           { label: "- -  \u041F\u0443\u043D\u043A\u0442\u0438\u0440", onClick: () => this.updateElement(el, { strokeStyle: "dashed" }) },
           { label: "\xB7\xB7\xB7  \u0422\u043E\u0447\u043A\u0438", onClick: () => this.updateElement(el, { strokeStyle: "dotted" }) },
           { label: "\u2795  \u0422\u043E\u043B\u0449\u0435", onClick: () => {
-            var _a;
-            return this.updateElement(el, { strokeWidth: Math.min(((_a = el.strokeWidth) != null ? _a : 1) + 1, 4) });
+            var _a2;
+            return this.updateElement(el, { strokeWidth: Math.min(((_a2 = el.strokeWidth) != null ? _a2 : 1) + 1, 4) });
           } },
           { label: "\u2796  \u0422\u043E\u043D\u044C\u0448\u0435", onClick: () => {
-            var _a;
-            return this.updateElement(el, { strokeWidth: Math.max(((_a = el.strokeWidth) != null ? _a : 1) - 1, 0.5) });
+            var _a2;
+            return this.updateElement(el, { strokeWidth: Math.max(((_a2 = el.strokeWidth) != null ? _a2 : 1) - 1, 0.5) });
           } }
         ]
       },

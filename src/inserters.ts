@@ -117,20 +117,6 @@ export async function insertEmbedOrImage(
   }
 }
 
-/* ---------- действия над объектом (тап пером по объекту) ---------- */
-
-/** Добавить текст примерно по центру объекта (или у середины стрелки/линии). */
-export async function addTextToObject(ea: any, app: App, el: any): Promise<void> {
-  const text = await promptText(app, "Текст");
-  if (text == null) return;
-  ea.reset();
-  ea.setView("active");
-  const cx = (el.x ?? 0) + (el.width ?? 0) / 2 - 40;
-  const cy = (el.y ?? 0) + (el.height ?? 0) / 2 - 12;
-  const id = ea.addText(cx, cy, text, { autoResize: true });
-  await commitSelect(ea, id);
-}
-
 /* ---------- модальные окна ---------- */
 
 function promptText(app: App, title: string): Promise<string | null> {

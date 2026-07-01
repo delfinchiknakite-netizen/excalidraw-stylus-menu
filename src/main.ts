@@ -2,13 +2,7 @@ import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { DEFAULT_SETTINGS, StylusMenuSettings, TriggerGesture } from "./settings";
 import { PointerWatcher, TriggerCtx } from "./PointerWatcher";
 import { InsertMenu, MenuItem } from "./InsertMenu";
-import {
-  addTextToObject,
-  insertEmbedOrImage,
-  insertShape,
-  insertSticker,
-  insertText,
-} from "./inserters";
+import { insertEmbedOrImage, insertShape, insertSticker, insertText } from "./inserters";
 import { ConnectorController, contains, nearEdge } from "./connector";
 
 const EXCALIDRAW_VIEW = "excalidraw";
@@ -363,7 +357,6 @@ export default class StylusMenuPlugin extends Plugin {
     const cx = (el.x ?? 0) + (el.width ?? 0) / 2;
     const cy = (el.y ?? 0) + (el.height ?? 0) / 2;
     return [
-      { label: "✎  Добавить текст", onClick: () => addTextToObject(ea, this.app, el) },
       {
         label: "→  Стрелка к объекту…",
         onClick: () => {
@@ -379,8 +372,10 @@ export default class StylusMenuPlugin extends Plugin {
 
   /** Меню для стрелки/линии. */
   private arrowMenuItems(ea: any, el: any): MenuItem[] {
+    const cx = (el.x ?? 0) + (el.width ?? 0) / 2;
+    const cy = (el.y ?? 0) + (el.height ?? 0) / 2;
     return [
-      { label: "✎  Добавить текст", onClick: () => addTextToObject(ea, this.app, el) },
+      { label: "▢  Стикер", onClick: () => insertSticker(ea, this.app, cx, cy) },
       {
         label: "↣  Наконечники ›",
         children: [
