@@ -33,6 +33,7 @@ var DEFAULT_SETTINGS = {
   moveThresholdPx: 8,
   edgeMarginPx: 16,
   cleanupStrayDot: true,
+  objectTapMenu: true,
   debugOverlay: false,
   defaultRectW: 160,
   defaultRectH: 100,
@@ -42,7 +43,7 @@ var DEFAULT_SETTINGS = {
 
 // src/PointerWatcher.ts
 var PointerWatcher = class {
-  constructor(el, getSettings, onTrigger, onArm, onPointer, onDebug, onDoubleTap, onHold) {
+  constructor(el, getSettings, onTrigger, onArm, onPointer, onDebug, onDoubleTap, onHold, onContactTap) {
     this.el = el;
     this.getSettings = getSettings;
     this.onTrigger = onTrigger;
@@ -51,6 +52,7 @@ var PointerWatcher = class {
     this.onDebug = onDebug;
     this.onDoubleTap = onDoubleTap;
     this.onHold = onHold;
+    this.onContactTap = onContactTap;
     this.longPressTimer = null;
     this.downX = 0;
     this.downY = 0;
@@ -91,6 +93,13 @@ var PointerWatcher = class {
       if (s.trigger === "penbutton") {
         this.penBtnActive = false;
         this.clearHoldTimer();
+        if (e.buttons & 1 && s.objectTapMenu) {
+          this.downX = e.clientX;
+          this.downY = e.clientY;
+          this.moved = false;
+          this.armed = true;
+          this.onArm();
+        }
         return;
       }
       if (s.trigger === "tapempty") {
@@ -173,7 +182,11 @@ var PointerWatcher = class {
       if (this.armed) {
         const wasTap = !this.moved;
         this.armed = false;
-        if (wasTap) this.onTrigger({ clientX: this.downX, clientY: this.downY });
+        if (wasTap) {
+          const ctx = { clientX: this.downX, clientY: this.downY };
+          if (this.getSettings().trigger === "penbutton") this.onContactTap(ctx);
+          else this.onTrigger(ctx);
+        }
       }
     };
     this.cancel = () => {
@@ -452,6 +465,27 @@ async function insertEmbedOrImage(ea, app, x, y, s) {
   } catch (e) {
   }
 }
+async function addTextToObject(ea, app, el) {
+  var _a, _b, _c;
+  const text = await promptText(app, "\u0422\u0435\u043A\u0441\u0442 \u043D\u0430 \u043E\u0431\u044A\u0435\u043A\u0442\u0435");
+  if (text == null) return;
+  ea.reset();
+  ea.setView("active");
+  const w = el.width || 0;
+  const topY = ((_a = el.y) != null ? _a : 0) + ((_b = el.height) != null ? _b : 0) / 2 - 12;
+  ea.addText((_c = el.x) != null ? _c : 0, topY, text, w ? { width: w, textAlign: "center" } : {});
+  await commit(ea);
+}
+async function startArrowFromObject(ea, el, s) {
+  var _a, _b, _c, _d;
+  ea.reset();
+  ea.setView("active");
+  const sx = ((_a = el.x) != null ? _a : 0) + ((_b = el.width) != null ? _b : 0);
+  const sy = ((_c = el.y) != null ? _c : 0) + ((_d = el.height) != null ? _d : 0) / 2;
+  const ex = sx + s.defaultRectW;
+  ea.addArrow([[sx, sy], [ex, sy]], { endArrowHead: "arrow" });
+  await commit(ea);
+}
 function promptText(app, title) {
   return new Promise((resolve) => new TextPromptModal(app, title, resolve).open());
 }
@@ -693,7 +727,8 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
         },
         (info) => this.logLine(info),
         () => this.copySelection(),
-        (ctx) => this.pasteClipboard(ctx)
+        (ctx) => this.pasteClipboard(ctx),
+        (ctx) => this.onObjectTap(ctx)
       );
       watcher.attach();
       this.watchers.set(el, watcher);
@@ -841,6 +876,79 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       }
     ];
     new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+  }
+  /* ---------- меню действий над объектом (тап пером по объекту) ---------- */
+  /** Контактный тап пером: если попали по объекту — меню действий; иначе ничего. */
+  onObjectTap(ctx) {
+    var _a;
+    const ea = getEA(this.app);
+    const api = getApi(this.app);
+    if (!ea || !(api == null ? void 0 : api.getSceneElements)) {
+      this.clearSnapshot();
+      return;
+    }
+    const { x: sx, y: sy } = this.toScene(api, ctx.clientX, ctx.clientY);
+    const els = ((_a = api.getSceneElements()) != null ? _a : []).filter(
+      (el) => el && !el.isDeleted && hasBBox(el)
+    );
+    let hit = null;
+    for (const el of els) if (contains(sx, sy, el, 0)) hit = el;
+    if (!hit) {
+      this.clearSnapshot();
+      return;
+    }
+    this.scheduleCleanup();
+    this.openObjectMenu(ctx, ea, hit);
+  }
+  openObjectMenu(ctx, ea, el) {
+    var _a, _b, _c, _d;
+    const cx = ((_a = el.x) != null ? _a : 0) + ((_b = el.width) != null ? _b : 0) / 2;
+    const cy = ((_c = el.y) != null ? _c : 0) + ((_d = el.height) != null ? _d : 0) / 2;
+    const items = [
+      { label: "\u270E  \u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u0442\u0435\u043A\u0441\u0442", onClick: () => addTextToObject(ea, this.app, el) },
+      { label: "\u2192  \u0421\u0442\u0440\u0435\u043B\u043A\u0430 \u043E\u0442 \u043E\u0431\u044A\u0435\u043A\u0442\u0430", onClick: () => startArrowFromObject(ea, el, this.settings) },
+      { label: "\u25A2  \u0421\u0442\u0438\u043A\u0435\u0440 \u043D\u0430 \u043E\u0431\u044A\u0435\u043A\u0442", onClick: () => insertSticker(ea, this.app, cx, cy) },
+      { label: "\u29C9  \u0414\u0443\u0431\u043B\u0438\u0440\u043E\u0432\u0430\u0442\u044C", onClick: () => this.duplicateElement(el) },
+      { label: "\u{1F5D1}  \u0423\u0434\u0430\u043B\u0438\u0442\u044C", onClick: () => this.deleteElement(el) }
+    ];
+    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+  }
+  duplicateElement(el) {
+    var _a, _b, _c, _d, _e, _f, _g;
+    const api = getApi(this.app);
+    if (!(api == null ? void 0 : api.updateScene)) return;
+    const clone = JSON.parse(JSON.stringify(el));
+    clone.id = genId();
+    clone.x = ((_a = el.x) != null ? _a : 0) + 20;
+    clone.y = ((_b = el.y) != null ? _b : 0) + 20;
+    clone.seed = Math.random() * 2 ** 31 | 0;
+    clone.versionNonce = Math.random() * 2 ** 31 | 0;
+    clone.version = ((_c = el.version) != null ? _c : 1) + 1;
+    clone.updated = Date.now();
+    clone.boundElements = [];
+    clone.containerId = null;
+    clone.startBinding = null;
+    clone.endBinding = null;
+    const cur = ((_e = (_d = api.getSceneElements) == null ? void 0 : _d.call(api)) != null ? _e : []).filter((e) => e && !e.isDeleted);
+    api.updateScene({
+      elements: [...cur, clone],
+      appState: { ...(_g = (_f = api.getAppState) == null ? void 0 : _f.call(api)) != null ? _g : {}, selectedElementIds: { [clone.id]: true } },
+      commitToHistory: true
+    });
+  }
+  deleteElement(el) {
+    var _a, _b, _c;
+    const api = getApi(this.app);
+    if (!(api == null ? void 0 : api.updateScene)) return;
+    const cur = ((_b = (_a = api.getSceneElements) == null ? void 0 : _a.call(api)) != null ? _b : []).filter((e) => e && !e.isDeleted);
+    const boundIds = /* @__PURE__ */ new Set([
+      el.id,
+      ...((_c = el.boundElements) != null ? _c : []).map((b) => b.id)
+    ]);
+    api.updateScene({
+      elements: cur.filter((e) => !boundIds.has(e.id) && e.containerId !== el.id),
+      commitToHistory: true
+    });
   }
   /* ---------- копировать / вставить (жесты кнопкой при парении) ---------- */
   /** Двойной тап кнопкой: скопировать выделенные элементы во внутренний буфер плагина. */
@@ -1037,6 +1145,12 @@ var StylusMenuSettingTab = class extends import_obsidian3.PluginSettingTab {
     new import_obsidian3.Setting(containerEl).setName("\u0416\u0435\u0441\u0442-\u0442\u0440\u0438\u0433\u0433\u0435\u0440").setDesc("\u0427\u0435\u043C \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0442\u044C \u043C\u0435\u043D\u044E \u0432\u0441\u0442\u0430\u0432\u043A\u0438 \u043F\u0435\u0440\u043E\u043C.").addDropdown(
       (d) => d.addOption("penbutton", "\u041A\u043D\u043E\u043F\u043A\u0430 S Pen \u043F\u0440\u0438 \u043F\u0430\u0440\u0435\u043D\u0438\u0438 (\u0442\u0430\u043F\u2192\u043C\u0435\u043D\u044E, 2\xD7\u2192\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C, \u0443\u0434\u0435\u0440\u0436.\u2192\u0432\u0441\u0442\u0430\u0432\u0438\u0442\u044C)").addOption("tapempty", "\u041A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u043F\u0443\u0441\u0442\u043E\u043C\u0443 \u043C\u0435\u0441\u0442\u0443").addOption("longpress", "\u0414\u043E\u043B\u0433\u043E\u0435 \u043D\u0430\u0436\u0430\u0442\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("doubletap", "\u0414\u0432\u043E\u0439\u043D\u043E\u0435 \u043A\u0430\u0441\u0430\u043D\u0438\u0435 \u043F\u0435\u0440\u043E\u043C").addOption("barrel", "\u0411\u043E\u043A\u043E\u0432\u0430\u044F \u043A\u043D\u043E\u043F\u043A\u0430 S Pen + \u043A\u0430\u0441\u0430\u043D\u0438\u0435 (barrel)").setValue(this.plugin.settings.trigger).onChange(async (v) => {
         this.plugin.settings.trigger = v;
+        await this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian3.Setting(containerEl).setName("\u041C\u0435\u043D\u044E \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0439 \u043F\u043E \u0442\u0430\u043F\u0443 \u043D\u0430 \u043E\u0431\u044A\u0435\u043A\u0442").setDesc("\u0422\u0430\u043F \u043F\u0435\u0440\u043E\u043C \u043F\u043E \u0444\u0438\u0433\u0443\u0440\u0435/\u043E\u0431\u044A\u0435\u043A\u0442\u0443 \u2192 \u043C\u0435\u043D\u044E: \u0434\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u0442\u0435\u043A\u0441\u0442, \u0441\u0442\u0440\u0435\u043B\u043A\u0430 \u043E\u0442 \u043E\u0431\u044A\u0435\u043A\u0442\u0430, \u0441\u0442\u0438\u043A\u0435\u0440, \u0434\u0443\u0431\u043B\u0438\u0440\u043E\u0432\u0430\u0442\u044C, \u0443\u0434\u0430\u043B\u0438\u0442\u044C.").addToggle(
+      (t) => t.setValue(this.plugin.settings.objectTapMenu).onChange(async (v) => {
+        this.plugin.settings.objectTapMenu = v;
         await this.plugin.saveSettings();
       })
     );

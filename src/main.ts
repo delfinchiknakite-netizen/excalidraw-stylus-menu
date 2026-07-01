@@ -2,7 +2,14 @@ import { App, Notice, Plugin, PluginSettingTab, Setting } from "obsidian";
 import { DEFAULT_SETTINGS, StylusMenuSettings, TriggerGesture } from "./settings";
 import { PointerWatcher, TriggerCtx } from "./PointerWatcher";
 import { InsertMenu, MenuItem } from "./InsertMenu";
-import { insertEmbedOrImage, insertShape, insertSticker, insertText } from "./inserters";
+import {
+  addTextToObject,
+  insertEmbedOrImage,
+  insertShape,
+  insertSticker,
+  insertText,
+  startArrowFromObject,
+} from "./inserters";
 import { ConnectorController, contains, nearEdge } from "./connector";
 
 const EXCALIDRAW_VIEW = "excalidraw";
@@ -138,6 +145,7 @@ export default class StylusMenuPlugin extends Plugin {
         (info) => this.logLine(info),
         () => this.copySelection(),
         (ctx) => this.pasteClipboard(ctx),
+        (ctx) => this.onObjectTap(ctx),
       );
       watcher.attach();
       this.watchers.set(el, watcher);
@@ -303,6 +311,80 @@ export default class StylusMenuPlugin extends Plugin {
       },
     ];
     new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+  }
+
+  /* ---------- меню действий над объектом (тап пером по объекту) ---------- */
+
+  /** Контактный тап пером: если попали по объекту — меню действий; иначе ничего. */
+  private onObjectTap(ctx: TriggerCtx): void {
+    const ea = getEA(this.app);
+    const api = getApi(this.app);
+    if (!ea || !api?.getSceneElements) {
+      this.clearSnapshot();
+      return;
+    }
+    const { x: sx, y: sy } = this.toScene(api, ctx.clientX, ctx.clientY);
+    const els = (api.getSceneElements() ?? []).filter(
+      (el: any) => el && !el.isDeleted && hasBBox(el),
+    );
+    let hit: any = null;
+    for (const el of els) if (contains(sx, sy, el, 0)) hit = el; // последний в массиве = верхний
+    if (!hit) {
+      this.clearSnapshot(); // по пустому месту — оставляем поведение Excalidraw
+      return;
+    }
+    this.scheduleCleanup(); // убрать точку-артефакт от самого тапа
+    this.openObjectMenu(ctx, ea, hit);
+  }
+
+  private openObjectMenu(ctx: TriggerCtx, ea: any, el: any): void {
+    const cx = (el.x ?? 0) + (el.width ?? 0) / 2;
+    const cy = (el.y ?? 0) + (el.height ?? 0) / 2;
+    const items: MenuItem[] = [
+      { label: "✎  Добавить текст", onClick: () => addTextToObject(ea, this.app, el) },
+      { label: "→  Стрелка от объекта", onClick: () => startArrowFromObject(ea, el, this.settings) },
+      { label: "▢  Стикер на объект", onClick: () => insertSticker(ea, this.app, cx, cy) },
+      { label: "⧉  Дублировать", onClick: () => this.duplicateElement(el) },
+      { label: "🗑  Удалить", onClick: () => this.deleteElement(el) },
+    ];
+    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+  }
+
+  private duplicateElement(el: any): void {
+    const api = getApi(this.app);
+    if (!api?.updateScene) return;
+    const clone = JSON.parse(JSON.stringify(el));
+    clone.id = genId();
+    clone.x = (el.x ?? 0) + 20;
+    clone.y = (el.y ?? 0) + 20;
+    clone.seed = (Math.random() * 2 ** 31) | 0;
+    clone.versionNonce = (Math.random() * 2 ** 31) | 0;
+    clone.version = (el.version ?? 1) + 1;
+    clone.updated = Date.now();
+    clone.boundElements = [];
+    clone.containerId = null;
+    clone.startBinding = null;
+    clone.endBinding = null;
+    const cur = (api.getSceneElements?.() ?? []).filter((e: any) => e && !e.isDeleted);
+    api.updateScene({
+      elements: [...cur, clone],
+      appState: { ...(api.getAppState?.() ?? {}), selectedElementIds: { [clone.id]: true } },
+      commitToHistory: true,
+    });
+  }
+
+  private deleteElement(el: any): void {
+    const api = getApi(this.app);
+    if (!api?.updateScene) return;
+    const cur = (api.getSceneElements?.() ?? []).filter((e: any) => e && !e.isDeleted);
+    const boundIds = new Set<string>([
+      el.id,
+      ...((el.boundElements ?? []).map((b: any) => b.id) as string[]),
+    ]);
+    api.updateScene({
+      elements: cur.filter((e: any) => !boundIds.has(e.id) && e.containerId !== el.id),
+      commitToHistory: true,
+    });
   }
 
   /* ---------- копировать / вставить (жесты кнопкой при парении) ---------- */
@@ -532,6 +614,16 @@ class StylusMenuSettingTab extends PluginSettingTab {
             this.plugin.settings.trigger = v as TriggerGesture;
             await this.plugin.saveSettings();
           }),
+      );
+
+    new Setting(containerEl)
+      .setName("Меню действий по тапу на объект")
+      .setDesc("Тап пером по фигуре/объекту → меню: добавить текст, стрелка от объекта, стикер, дублировать, удалить.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.objectTapMenu).onChange(async (v) => {
+          this.plugin.settings.objectTapMenu = v;
+          await this.plugin.saveSettings();
+        }),
       );
 
     new Setting(containerEl)

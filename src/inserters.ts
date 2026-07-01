@@ -99,6 +99,31 @@ export async function insertEmbedOrImage(
   }
 }
 
+/* ---------- действия над объектом (тап пером по объекту) ---------- */
+
+/** Добавить текст, отцентрованный на объекте. */
+export async function addTextToObject(ea: any, app: App, el: any): Promise<void> {
+  const text = await promptText(app, "Текст на объекте");
+  if (text == null) return;
+  ea.reset();
+  ea.setView("active");
+  const w = el.width || 0;
+  const topY = (el.y ?? 0) + (el.height ?? 0) / 2 - 12;
+  ea.addText(el.x ?? 0, topY, text, w ? { width: w, textAlign: "center" } : {});
+  await commit(ea);
+}
+
+/** Нарисовать стрелку, стартующую от правого края объекта наружу. */
+export async function startArrowFromObject(ea: any, el: any, s: StylusMenuSettings): Promise<void> {
+  ea.reset();
+  ea.setView("active");
+  const sx = (el.x ?? 0) + (el.width ?? 0);
+  const sy = (el.y ?? 0) + (el.height ?? 0) / 2;
+  const ex = sx + s.defaultRectW;
+  ea.addArrow([[sx, sy], [ex, sy]], { endArrowHead: "arrow" });
+  await commit(ea);
+}
+
 /* ---------- модальные окна ---------- */
 
 function promptText(app: App, title: string): Promise<string | null> {

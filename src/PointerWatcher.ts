@@ -60,6 +60,7 @@ export class PointerWatcher {
     private onDebug: Debug,
     private onDoubleTap: Action,
     private onHold: Trigger,
+    private onContactTap: Trigger,
   ) {}
 
   attach(): void {
@@ -110,10 +111,17 @@ export class PointerWatcher {
     if (!this.onDrawSurface(e)) return; // не трогаем кнопки/панели Excalidraw
 
     if (s.trigger === "penbutton") {
-      // Жесты только при ПАРЕНИИ (см. move). Касание = обычное рисование Excalidraw;
-      // сбрасываем «парящее» состояние кнопки, кнопку при касании гасим в contextmenu.
+      // Жесты кнопкой — только при ПАРЕНИИ (см. move). Сбрасываем «парящее» состояние.
       this.penBtnActive = false;
       this.clearHoldTimer();
+      // Касание: взводим распознавание тапа по объекту (down+up без движения).
+      if (e.buttons & 1 && s.objectTapMenu) {
+        this.downX = e.clientX;
+        this.downY = e.clientY;
+        this.moved = false;
+        this.armed = true;
+        this.onArm(); // снимок сцены — убрать точку-артефакт от тапа
+      }
       return;
     }
 
@@ -209,7 +217,13 @@ export class PointerWatcher {
     if (this.armed) {
       const wasTap = !this.moved;
       this.armed = false;
-      if (wasTap) this.onTrigger({ clientX: this.downX, clientY: this.downY });
+      if (wasTap) {
+        const ctx = { clientX: this.downX, clientY: this.downY };
+        // В penbutton контактный тап ведём в меню действий над объектом (по hit-test),
+        // в остальных режимах — обычный триггер (меню/коннектор).
+        if (this.getSettings().trigger === "penbutton") this.onContactTap(ctx);
+        else this.onTrigger(ctx);
+      }
     }
   };
 
