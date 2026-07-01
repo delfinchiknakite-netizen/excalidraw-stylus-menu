@@ -69,6 +69,8 @@ npm install
 npm run build      # → main.js
 ```
 
+Как плагин устроен внутри (для разработки) — см. [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## Установка
 
 Скопируйте `main.js`, `manifest.json`, `styles.css` в папку вашего хранилища:
