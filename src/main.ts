@@ -320,14 +320,18 @@ export default class StylusMenuPlugin extends Plugin {
       return;
     }
     const { x: sx, y: sy } = this.toScene(api, ctx.clientX, ctx.clientY);
-    // Стрелки/линии/росчерки исключаем из хит-теста: у них огромный bbox по диагонали,
-    // из-за чего тап по пустому месту рядом попадал «в стрелку» и открывал меню.
-    const LINEAR = ["arrow", "line", "freedraw"];
-    const els = (api.getSceneElements() ?? []).filter(
-      (el: any) => el && !el.isDeleted && hasBBox(el) && !LINEAR.includes(el.type),
+    const all = (api.getSceneElements() ?? []).filter(
+      (el: any) => el && !el.isDeleted && hasBBox(el),
     );
+
+    // Одиночный хит для меню фигуры / цели стрелки. Стрелки/линии/росчерки исключаем:
+    // у них огромный bbox по диагонали, из-за чего тап по пустому месту рядом попадал «в стрелку».
+    const LINEAR = ["arrow", "line", "freedraw"];
     let hit: any = null;
-    for (const el of els) if (contains(sx, sy, el, 0)) hit = el; // последний в массиве = верхний
+    for (const el of all) {
+      if (LINEAR.includes(el.type)) continue;
+      if (contains(sx, sy, el, 0)) hit = el; // последний = верхний
+    }
 
     // Второй тап для стрелки: соединяем исходный объект с тем, по которому тапнули.
     if (this.pendingArrowFrom) {
@@ -336,6 +340,15 @@ export default class StylusMenuPlugin extends Plugin {
       this.scheduleCleanup();
       if (hit && hit.id !== from.id) this.connectArrow(from, hit);
       else new Notice("Стрелка отменена.");
+      return;
+    }
+
+    // Приоритет: тап по ВЫДЕЛЕННЫМ объектам → меню действий над выделением (дублировать/удалить).
+    const selIds = (api.getAppState?.() ?? {}).selectedElementIds ?? {};
+    const selected = all.filter((el: any) => selIds[el.id]);
+    if (selected.length && selected.some((el: any) => contains(sx, sy, el, 0))) {
+      this.scheduleCleanup();
+      this.openSelectionMenu(ctx, selected);
       return;
     }
 
@@ -365,9 +378,18 @@ export default class StylusMenuPlugin extends Plugin {
         },
       },
       { label: "▢  Стикер на объект", onClick: () => insertSticker(ea, this.app, cx, cy) },
-      { label: "⧉  Дублировать", onClick: () => this.duplicateElement(el) },
-      { label: "🗑  Удалить", onClick: () => this.deleteElement(el) },
+      { label: "⧉  Дублировать", onClick: () => this.duplicateElements([el]) },
+      { label: "🗑  Удалить", onClick: () => this.deleteElements([el]) },
     ];
+  }
+
+  /** Меню для выделения: тап по выделенным объектам → дублировать/удалить весь набор. */
+  private openSelectionMenu(ctx: TriggerCtx, els: any[]): void {
+    const items: MenuItem[] = [
+      { label: `⧉  Дублировать (${els.length})`, onClick: () => this.duplicateElements(els) },
+      { label: `🗑  Удалить (${els.length})`, onClick: () => this.deleteElements(els) },
+    ];
+    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
   }
 
   /** Стрелка между двумя существующими объектами (с привязкой обоих концов). */
@@ -393,41 +415,78 @@ export default class StylusMenuPlugin extends Plugin {
     }
   }
 
-  private duplicateElement(el: any): void {
-    const api = getApi(this.app);
-    if (!api?.updateScene) return;
-    const clone = JSON.parse(JSON.stringify(el));
-    clone.id = genId();
-    clone.x = (el.x ?? 0) + 20;
-    clone.y = (el.y ?? 0) + 20;
-    clone.seed = (Math.random() * 2 ** 31) | 0;
-    clone.versionNonce = (Math.random() * 2 ** 31) | 0;
-    clone.version = (el.version ?? 1) + 1;
-    clone.updated = Date.now();
-    clone.boundElements = [];
-    clone.containerId = null;
-    clone.startBinding = null;
-    clone.endBinding = null;
-    const cur = (api.getSceneElements?.() ?? []).filter((e: any) => e && !e.isDeleted);
-    api.updateScene({
-      elements: [...cur, clone],
-      appState: { ...(api.getAppState?.() ?? {}), selectedElementIds: { [clone.id]: true } },
-      commitToHistory: true,
+  /**
+   * Клонировать набор элементов с новыми id, перенастроив связи (группы, привязки,
+   * контейнеры) ВНУТРИ набора, и сместить на (dx, dy). Используется вставкой и дублированием.
+   */
+  private cloneElements(list: any[], dx: number, dy: number): any[] {
+    const idMap = new Map<string, string>();
+    const groupMap = new Map<string, string>();
+    for (const el of list) idMap.set(el.id, genId());
+    const remap = (id: string) => idMap.get(id) ?? id;
+    return list.map((src: any) => {
+      const el = JSON.parse(JSON.stringify(src));
+      el.id = idMap.get(src.id);
+      el.x = (src.x ?? 0) + dx;
+      el.y = (src.y ?? 0) + dy;
+      el.seed = (Math.random() * 2 ** 31) | 0;
+      el.versionNonce = (Math.random() * 2 ** 31) | 0;
+      el.version = (src.version ?? 1) + 1;
+      el.updated = Date.now();
+      if (Array.isArray(el.groupIds)) {
+        el.groupIds = el.groupIds.map((g: string) => {
+          if (!groupMap.has(g)) groupMap.set(g, genId());
+          return groupMap.get(g);
+        });
+      }
+      if (el.containerId) el.containerId = idMap.has(el.containerId) ? remap(el.containerId) : null;
+      if (Array.isArray(el.boundElements)) {
+        el.boundElements = el.boundElements
+          .filter((b: any) => b && idMap.has(b.id))
+          .map((b: any) => ({ ...b, id: remap(b.id) }));
+      }
+      for (const k of ["startBinding", "endBinding"] as const) {
+        if (el[k]?.elementId) {
+          if (idMap.has(el[k].elementId)) el[k] = { ...el[k], elementId: remap(el[k].elementId) };
+          else el[k] = null;
+        }
+      }
+      return el;
     });
   }
 
-  private deleteElement(el: any): void {
+  private duplicateElements(els: any[]): void {
     const api = getApi(this.app);
-    if (!api?.updateScene) return;
+    if (!api?.updateScene || !els.length) return;
+    const clones = this.cloneElements(els, 20, 20);
     const cur = (api.getSceneElements?.() ?? []).filter((e: any) => e && !e.isDeleted);
-    const boundIds = new Set<string>([
-      el.id,
-      ...((el.boundElements ?? []).map((b: any) => b.id) as string[]),
-    ]);
+    const sel: Record<string, true> = {};
+    for (const c of clones) sel[c.id] = true;
     api.updateScene({
-      elements: cur.filter((e: any) => !boundIds.has(e.id) && e.containerId !== el.id),
+      elements: [...cur, ...clones],
+      appState: { ...(api.getAppState?.() ?? {}), selectedElementIds: sel },
       commitToHistory: true,
     });
+    new Notice(`Дублировано: ${clones.length}`);
+  }
+
+  private deleteElements(els: any[]): void {
+    const api = getApi(this.app);
+    if (!api?.updateScene || !els.length) return;
+    const ids = new Set<string>();
+    for (const el of els) {
+      ids.add(el.id);
+      for (const b of el.boundElements ?? []) ids.add(b.id);
+    }
+    const cur = (api.getSceneElements?.() ?? []).filter((e: any) => e && !e.isDeleted);
+    api.updateScene({
+      elements: cur.filter(
+        (e: any) => !ids.has(e.id) && !(e.containerId && ids.has(e.containerId)),
+      ),
+      appState: { ...(api.getAppState?.() ?? {}), selectedElementIds: {} },
+      commitToHistory: true,
+    });
+    new Notice(`Удалено: ${els.length}`);
   }
 
   /* ---------- копировать / вставить (жесты кнопкой при парении) ---------- */
@@ -471,47 +530,11 @@ export default class StylusMenuPlugin extends Plugin {
       return;
     }
 
-    // Новые id для элементов и групп + перенастройка связей внутри вставляемого набора.
-    const idMap = new Map<string, string>();
-    const groupMap = new Map<string, string>();
-    for (const el of this.clipboard) idMap.set(el.id, genId());
-
+    // Смещаем набор так, чтобы его левый-верхний угол оказался у кончика пера.
     const minX = Math.min(...this.clipboard.map((e: any) => e.x ?? 0));
     const minY = Math.min(...this.clipboard.map((e: any) => e.y ?? 0));
     const { x: penX, y: penY } = this.toScene(api, ctx.clientX, ctx.clientY);
-    const dx = penX - minX;
-    const dy = penY - minY;
-
-    const remapId = (id: string) => idMap.get(id) ?? id;
-    const clones = this.clipboard.map((src: any) => {
-      const el = JSON.parse(JSON.stringify(src));
-      el.id = idMap.get(src.id);
-      el.x = (src.x ?? 0) + dx;
-      el.y = (src.y ?? 0) + dy;
-      el.seed = (Math.random() * 2 ** 31) | 0;
-      el.versionNonce = (Math.random() * 2 ** 31) | 0;
-      el.version = (src.version ?? 1) + 1;
-      el.updated = Date.now();
-      if (Array.isArray(el.groupIds)) {
-        el.groupIds = el.groupIds.map((g: string) => {
-          if (!groupMap.has(g)) groupMap.set(g, genId());
-          return groupMap.get(g);
-        });
-      }
-      if (el.containerId) el.containerId = idMap.has(el.containerId) ? remapId(el.containerId) : null;
-      if (Array.isArray(el.boundElements)) {
-        el.boundElements = el.boundElements
-          .filter((b: any) => b && idMap.has(b.id))
-          .map((b: any) => ({ ...b, id: remapId(b.id) }));
-      }
-      for (const k of ["startBinding", "endBinding"] as const) {
-        if (el[k]?.elementId) {
-          if (idMap.has(el[k].elementId)) el[k] = { ...el[k], elementId: remapId(el[k].elementId) };
-          else el[k] = null;
-        }
-      }
-      return el;
-    });
+    const clones = this.cloneElements(this.clipboard, penX - minX, penY - minY);
 
     const current = (api.getSceneElements?.() ?? []).filter((e: any) => e && !e.isDeleted);
     const selectedElementIds: Record<string, true> = {};

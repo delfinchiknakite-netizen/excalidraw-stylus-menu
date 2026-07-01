@@ -873,7 +873,7 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
   /* ---------- меню действий над объектом (тап пером по объекту) ---------- */
   /** Контактный тап пером: если попали по объекту — меню действий; иначе ничего. */
   onObjectTap(ctx) {
-    var _a;
+    var _a, _b, _c, _d;
     const ea = getEA(this.app);
     const api = getApi(this.app);
     if (!ea || !(api == null ? void 0 : api.getSceneElements)) {
@@ -882,18 +882,28 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       return;
     }
     const { x: sx, y: sy } = this.toScene(api, ctx.clientX, ctx.clientY);
-    const LINEAR = ["arrow", "line", "freedraw"];
-    const els = ((_a = api.getSceneElements()) != null ? _a : []).filter(
-      (el) => el && !el.isDeleted && hasBBox(el) && !LINEAR.includes(el.type)
+    const all = ((_a = api.getSceneElements()) != null ? _a : []).filter(
+      (el) => el && !el.isDeleted && hasBBox(el)
     );
+    const LINEAR = ["arrow", "line", "freedraw"];
     let hit = null;
-    for (const el of els) if (contains(sx, sy, el, 0)) hit = el;
+    for (const el of all) {
+      if (LINEAR.includes(el.type)) continue;
+      if (contains(sx, sy, el, 0)) hit = el;
+    }
     if (this.pendingArrowFrom) {
       const from = this.pendingArrowFrom;
       this.pendingArrowFrom = null;
       this.scheduleCleanup();
       if (hit && hit.id !== from.id) this.connectArrow(from, hit);
       else new import_obsidian3.Notice("\u0421\u0442\u0440\u0435\u043B\u043A\u0430 \u043E\u0442\u043C\u0435\u043D\u0435\u043D\u0430.");
+      return;
+    }
+    const selIds = (_d = ((_c = (_b = api.getAppState) == null ? void 0 : _b.call(api)) != null ? _c : {}).selectedElementIds) != null ? _d : {};
+    const selected = all.filter((el) => selIds[el.id]);
+    if (selected.length && selected.some((el) => contains(sx, sy, el, 0))) {
+      this.scheduleCleanup();
+      this.openSelectionMenu(ctx, selected);
       return;
     }
     if (!hit) {
@@ -920,9 +930,17 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
         }
       },
       { label: "\u25A2  \u0421\u0442\u0438\u043A\u0435\u0440 \u043D\u0430 \u043E\u0431\u044A\u0435\u043A\u0442", onClick: () => insertSticker(ea, this.app, cx, cy) },
-      { label: "\u29C9  \u0414\u0443\u0431\u043B\u0438\u0440\u043E\u0432\u0430\u0442\u044C", onClick: () => this.duplicateElement(el) },
-      { label: "\u{1F5D1}  \u0423\u0434\u0430\u043B\u0438\u0442\u044C", onClick: () => this.deleteElement(el) }
+      { label: "\u29C9  \u0414\u0443\u0431\u043B\u0438\u0440\u043E\u0432\u0430\u0442\u044C", onClick: () => this.duplicateElements([el]) },
+      { label: "\u{1F5D1}  \u0423\u0434\u0430\u043B\u0438\u0442\u044C", onClick: () => this.deleteElements([el]) }
     ];
+  }
+  /** Меню для выделения: тап по выделенным объектам → дублировать/удалить весь набор. */
+  openSelectionMenu(ctx, els) {
+    const items = [
+      { label: `\u29C9  \u0414\u0443\u0431\u043B\u0438\u0440\u043E\u0432\u0430\u0442\u044C (${els.length})`, onClick: () => this.duplicateElements(els) },
+      { label: `\u{1F5D1}  \u0423\u0434\u0430\u043B\u0438\u0442\u044C (${els.length})`, onClick: () => this.deleteElements(els) }
+    ];
+    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
   }
   /** Стрелка между двумя существующими объектами (с привязкой обоих концов). */
   async connectArrow(from, to) {
@@ -946,42 +964,80 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0437\u0434\u0430\u0442\u044C \u0441\u0442\u0440\u0435\u043B\u043A\u0443.");
     }
   }
-  duplicateElement(el) {
-    var _a, _b, _c, _d, _e, _f, _g;
-    const api = getApi(this.app);
-    if (!(api == null ? void 0 : api.updateScene)) return;
-    const clone = JSON.parse(JSON.stringify(el));
-    clone.id = genId();
-    clone.x = ((_a = el.x) != null ? _a : 0) + 20;
-    clone.y = ((_b = el.y) != null ? _b : 0) + 20;
-    clone.seed = Math.random() * 2 ** 31 | 0;
-    clone.versionNonce = Math.random() * 2 ** 31 | 0;
-    clone.version = ((_c = el.version) != null ? _c : 1) + 1;
-    clone.updated = Date.now();
-    clone.boundElements = [];
-    clone.containerId = null;
-    clone.startBinding = null;
-    clone.endBinding = null;
-    const cur = ((_e = (_d = api.getSceneElements) == null ? void 0 : _d.call(api)) != null ? _e : []).filter((e) => e && !e.isDeleted);
-    api.updateScene({
-      elements: [...cur, clone],
-      appState: { ...(_g = (_f = api.getAppState) == null ? void 0 : _f.call(api)) != null ? _g : {}, selectedElementIds: { [clone.id]: true } },
-      commitToHistory: true
+  /**
+   * Клонировать набор элементов с новыми id, перенастроив связи (группы, привязки,
+   * контейнеры) ВНУТРИ набора, и сместить на (dx, dy). Используется вставкой и дублированием.
+   */
+  cloneElements(list, dx, dy) {
+    const idMap = /* @__PURE__ */ new Map();
+    const groupMap = /* @__PURE__ */ new Map();
+    for (const el of list) idMap.set(el.id, genId());
+    const remap = (id) => {
+      var _a;
+      return (_a = idMap.get(id)) != null ? _a : id;
+    };
+    return list.map((src) => {
+      var _a, _b, _c, _d;
+      const el = JSON.parse(JSON.stringify(src));
+      el.id = idMap.get(src.id);
+      el.x = ((_a = src.x) != null ? _a : 0) + dx;
+      el.y = ((_b = src.y) != null ? _b : 0) + dy;
+      el.seed = Math.random() * 2 ** 31 | 0;
+      el.versionNonce = Math.random() * 2 ** 31 | 0;
+      el.version = ((_c = src.version) != null ? _c : 1) + 1;
+      el.updated = Date.now();
+      if (Array.isArray(el.groupIds)) {
+        el.groupIds = el.groupIds.map((g) => {
+          if (!groupMap.has(g)) groupMap.set(g, genId());
+          return groupMap.get(g);
+        });
+      }
+      if (el.containerId) el.containerId = idMap.has(el.containerId) ? remap(el.containerId) : null;
+      if (Array.isArray(el.boundElements)) {
+        el.boundElements = el.boundElements.filter((b) => b && idMap.has(b.id)).map((b) => ({ ...b, id: remap(b.id) }));
+      }
+      for (const k of ["startBinding", "endBinding"]) {
+        if ((_d = el[k]) == null ? void 0 : _d.elementId) {
+          if (idMap.has(el[k].elementId)) el[k] = { ...el[k], elementId: remap(el[k].elementId) };
+          else el[k] = null;
+        }
+      }
+      return el;
     });
   }
-  deleteElement(el) {
-    var _a, _b, _c;
+  duplicateElements(els) {
+    var _a, _b, _c, _d;
     const api = getApi(this.app);
-    if (!(api == null ? void 0 : api.updateScene)) return;
+    if (!(api == null ? void 0 : api.updateScene) || !els.length) return;
+    const clones = this.cloneElements(els, 20, 20);
     const cur = ((_b = (_a = api.getSceneElements) == null ? void 0 : _a.call(api)) != null ? _b : []).filter((e) => e && !e.isDeleted);
-    const boundIds = /* @__PURE__ */ new Set([
-      el.id,
-      ...((_c = el.boundElements) != null ? _c : []).map((b) => b.id)
-    ]);
+    const sel = {};
+    for (const c of clones) sel[c.id] = true;
     api.updateScene({
-      elements: cur.filter((e) => !boundIds.has(e.id) && e.containerId !== el.id),
+      elements: [...cur, ...clones],
+      appState: { ...(_d = (_c = api.getAppState) == null ? void 0 : _c.call(api)) != null ? _d : {}, selectedElementIds: sel },
       commitToHistory: true
     });
+    new import_obsidian3.Notice(`\u0414\u0443\u0431\u043B\u0438\u0440\u043E\u0432\u0430\u043D\u043E: ${clones.length}`);
+  }
+  deleteElements(els) {
+    var _a, _b, _c, _d, _e;
+    const api = getApi(this.app);
+    if (!(api == null ? void 0 : api.updateScene) || !els.length) return;
+    const ids = /* @__PURE__ */ new Set();
+    for (const el of els) {
+      ids.add(el.id);
+      for (const b of (_a = el.boundElements) != null ? _a : []) ids.add(b.id);
+    }
+    const cur = ((_c = (_b = api.getSceneElements) == null ? void 0 : _b.call(api)) != null ? _c : []).filter((e) => e && !e.isDeleted);
+    api.updateScene({
+      elements: cur.filter(
+        (e) => !ids.has(e.id) && !(e.containerId && ids.has(e.containerId))
+      ),
+      appState: { ...(_e = (_d = api.getAppState) == null ? void 0 : _d.call(api)) != null ? _e : {}, selectedElementIds: {} },
+      commitToHistory: true
+    });
+    new import_obsidian3.Notice(`\u0423\u0434\u0430\u043B\u0435\u043D\u043E: ${els.length}`);
   }
   /* ---------- копировать / вставить (жесты кнопкой при парении) ---------- */
   /** Двойной тап кнопкой: скопировать выделенные элементы во внутренний буфер плагина. */
@@ -1021,9 +1077,6 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       new import_obsidian3.Notice("\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0445\u043E\u043B\u0441\u0442 Excalidraw \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D.");
       return;
     }
-    const idMap = /* @__PURE__ */ new Map();
-    const groupMap = /* @__PURE__ */ new Map();
-    for (const el of this.clipboard) idMap.set(el.id, genId());
     const minX = Math.min(...this.clipboard.map((e) => {
       var _a2;
       return (_a2 = e.x) != null ? _a2 : 0;
@@ -1033,40 +1086,7 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       return (_a2 = e.y) != null ? _a2 : 0;
     }));
     const { x: penX, y: penY } = this.toScene(api, ctx.clientX, ctx.clientY);
-    const dx = penX - minX;
-    const dy = penY - minY;
-    const remapId = (id) => {
-      var _a2;
-      return (_a2 = idMap.get(id)) != null ? _a2 : id;
-    };
-    const clones = this.clipboard.map((src) => {
-      var _a2, _b2, _c2, _d2;
-      const el = JSON.parse(JSON.stringify(src));
-      el.id = idMap.get(src.id);
-      el.x = ((_a2 = src.x) != null ? _a2 : 0) + dx;
-      el.y = ((_b2 = src.y) != null ? _b2 : 0) + dy;
-      el.seed = Math.random() * 2 ** 31 | 0;
-      el.versionNonce = Math.random() * 2 ** 31 | 0;
-      el.version = ((_c2 = src.version) != null ? _c2 : 1) + 1;
-      el.updated = Date.now();
-      if (Array.isArray(el.groupIds)) {
-        el.groupIds = el.groupIds.map((g) => {
-          if (!groupMap.has(g)) groupMap.set(g, genId());
-          return groupMap.get(g);
-        });
-      }
-      if (el.containerId) el.containerId = idMap.has(el.containerId) ? remapId(el.containerId) : null;
-      if (Array.isArray(el.boundElements)) {
-        el.boundElements = el.boundElements.filter((b) => b && idMap.has(b.id)).map((b) => ({ ...b, id: remapId(b.id) }));
-      }
-      for (const k of ["startBinding", "endBinding"]) {
-        if ((_d2 = el[k]) == null ? void 0 : _d2.elementId) {
-          if (idMap.has(el[k].elementId)) el[k] = { ...el[k], elementId: remapId(el[k].elementId) };
-          else el[k] = null;
-        }
-      }
-      return el;
-    });
+    const clones = this.cloneElements(this.clipboard, penX - minX, penY - minY);
     const current = ((_d = (_c = api.getSceneElements) == null ? void 0 : _c.call(api)) != null ? _d : []).filter((e) => e && !e.isDeleted);
     const selectedElementIds = {};
     for (const c of clones) selectedElementIds[c.id] = true;
