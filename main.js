@@ -901,7 +901,7 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     }
     const selIds = (_d = ((_c = (_b = api.getAppState) == null ? void 0 : _b.call(api)) != null ? _c : {}).selectedElementIds) != null ? _d : {};
     const selected = all.filter((el) => selIds[el.id]);
-    if (selected.length && selected.some((el) => contains(sx, sy, el, 0))) {
+    if (selected.length > 1 && selected.some((el) => !LINEAR.includes(el.type) && contains(sx, sy, el, 0))) {
       this.scheduleCleanup();
       this.openSelectionMenu(ctx, selected);
       return;

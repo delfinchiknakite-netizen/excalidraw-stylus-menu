@@ -343,10 +343,15 @@ export default class StylusMenuPlugin extends Plugin {
       return;
     }
 
-    // Приоритет: тап по ВЫДЕЛЕННЫМ объектам → меню действий над выделением (дублировать/удалить).
+    // Приоритет: тап по МНОЖЕСТВЕННОМУ выделению → меню действий над набором (дублировать/удалить).
+    // Требуем >1 элемента и попадание по выделенной ФИГУРЕ (не по bbox стрелки — он огромный,
+    // иначе авто-выделенная стрелка перехватывала бы тапы). Действие применяется ко всему набору.
     const selIds = (api.getAppState?.() ?? {}).selectedElementIds ?? {};
     const selected = all.filter((el: any) => selIds[el.id]);
-    if (selected.length && selected.some((el: any) => contains(sx, sy, el, 0))) {
+    if (
+      selected.length > 1 &&
+      selected.some((el: any) => !LINEAR.includes(el.type) && contains(sx, sy, el, 0))
+    ) {
       this.scheduleCleanup();
       this.openSelectionMenu(ctx, selected);
       return;
