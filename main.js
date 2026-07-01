@@ -882,8 +882,9 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       return;
     }
     const { x: sx, y: sy } = this.toScene(api, ctx.clientX, ctx.clientY);
+    const LINEAR = ["arrow", "line", "freedraw"];
     const els = ((_a = api.getSceneElements()) != null ? _a : []).filter(
-      (el) => el && !el.isDeleted && hasBBox(el)
+      (el) => el && !el.isDeleted && hasBBox(el) && !LINEAR.includes(el.type)
     );
     let hit = null;
     for (const el of els) if (contains(sx, sy, el, 0)) hit = el;
@@ -903,9 +904,7 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
     this.openObjectMenu(ctx, ea, hit);
   }
   openObjectMenu(ctx, ea, el) {
-    const isLinear = el.type === "arrow" || el.type === "line";
-    const items = isLinear ? this.arrowMenuItems(ea, el) : this.shapeMenuItems(ea, el);
-    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, this.shapeMenuItems(ea, el)).open();
   }
   /** Меню для фигуры (прямоугольник/эллипс/текст/картинка/заметка). */
   shapeMenuItems(ea, el) {
@@ -921,43 +920,6 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
         }
       },
       { label: "\u25A2  \u0421\u0442\u0438\u043A\u0435\u0440 \u043D\u0430 \u043E\u0431\u044A\u0435\u043A\u0442", onClick: () => insertSticker(ea, this.app, cx, cy) },
-      { label: "\u29C9  \u0414\u0443\u0431\u043B\u0438\u0440\u043E\u0432\u0430\u0442\u044C", onClick: () => this.duplicateElement(el) },
-      { label: "\u{1F5D1}  \u0423\u0434\u0430\u043B\u0438\u0442\u044C", onClick: () => this.deleteElement(el) }
-    ];
-  }
-  /** Меню для стрелки/линии. */
-  arrowMenuItems(ea, el) {
-    var _a, _b, _c, _d;
-    const cx = ((_a = el.x) != null ? _a : 0) + ((_b = el.width) != null ? _b : 0) / 2;
-    const cy = ((_c = el.y) != null ? _c : 0) + ((_d = el.height) != null ? _d : 0) / 2;
-    return [
-      { label: "\u25A2  \u0421\u0442\u0438\u043A\u0435\u0440", onClick: () => insertSticker(ea, this.app, cx, cy) },
-      {
-        label: "\u21A3  \u041D\u0430\u043A\u043E\u043D\u0435\u0447\u043D\u0438\u043A\u0438 \u203A",
-        children: [
-          { label: "\u2192  \u0421\u0442\u0440\u0435\u043B\u043A\u0430 \u0432 \u043A\u043E\u043D\u0446\u0435", onClick: () => this.updateElement(el, { startArrowhead: null, endArrowhead: "arrow" }) },
-          { label: "\u2190\u2192  \u0421 \u043E\u0431\u0435\u0438\u0445 \u0441\u0442\u043E\u0440\u043E\u043D", onClick: () => this.updateElement(el, { startArrowhead: "arrow", endArrowhead: "arrow" }) },
-          { label: "\u2190  \u0421\u0442\u0440\u0435\u043B\u043A\u0430 \u0432 \u043D\u0430\u0447\u0430\u043B\u0435", onClick: () => this.updateElement(el, { startArrowhead: "arrow", endArrowhead: null }) },
-          { label: "\u25CF\u2192  \u0422\u043E\u0447\u043A\u0430 + \u0441\u0442\u0440\u0435\u043B\u043A\u0430", onClick: () => this.updateElement(el, { startArrowhead: "dot", endArrowhead: "arrow" }) },
-          { label: "\u2014  \u0411\u0435\u0437 \u043D\u0430\u043A\u043E\u043D\u0435\u0447\u043D\u0438\u043A\u043E\u0432", onClick: () => this.updateElement(el, { startArrowhead: null, endArrowhead: null }) }
-        ]
-      },
-      {
-        label: "\u2571  \u0424\u043E\u0440\u043C\u0430\u0442 \u043B\u0438\u043D\u0438\u0438 \u203A",
-        children: [
-          { label: "\u2500\u2500  \u0421\u043F\u043B\u043E\u0448\u043D\u0430\u044F", onClick: () => this.updateElement(el, { strokeStyle: "solid" }) },
-          { label: "- -  \u041F\u0443\u043D\u043A\u0442\u0438\u0440", onClick: () => this.updateElement(el, { strokeStyle: "dashed" }) },
-          { label: "\xB7\xB7\xB7  \u0422\u043E\u0447\u043A\u0438", onClick: () => this.updateElement(el, { strokeStyle: "dotted" }) },
-          { label: "\u2795  \u0422\u043E\u043B\u0449\u0435", onClick: () => {
-            var _a2;
-            return this.updateElement(el, { strokeWidth: Math.min(((_a2 = el.strokeWidth) != null ? _a2 : 1) + 1, 4) });
-          } },
-          { label: "\u2796  \u0422\u043E\u043D\u044C\u0448\u0435", onClick: () => {
-            var _a2;
-            return this.updateElement(el, { strokeWidth: Math.max(((_a2 = el.strokeWidth) != null ? _a2 : 1) - 1, 0.5) });
-          } }
-        ]
-      },
       { label: "\u29C9  \u0414\u0443\u0431\u043B\u0438\u0440\u043E\u0432\u0430\u0442\u044C", onClick: () => this.duplicateElement(el) },
       { label: "\u{1F5D1}  \u0423\u0434\u0430\u043B\u0438\u0442\u044C", onClick: () => this.deleteElement(el) }
     ];
@@ -983,26 +945,6 @@ var StylusMenuPlugin = class extends import_obsidian3.Plugin {
       console.error("[excalidraw-stylus-menu] connectArrow failed", err);
       new import_obsidian3.Notice("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0437\u0434\u0430\u0442\u044C \u0441\u0442\u0440\u0435\u043B\u043A\u0443.");
     }
-  }
-  /** Обновить свойства одного элемента (наконечники, стиль/толщина линии). */
-  updateElement(el, patch) {
-    var _a, _b;
-    const api = getApi(this.app);
-    if (!(api == null ? void 0 : api.updateScene)) return;
-    const cur = ((_b = (_a = api.getSceneElements) == null ? void 0 : _a.call(api)) != null ? _b : []).filter((e) => e && !e.isDeleted);
-    const next = cur.map(
-      (e) => {
-        var _a2;
-        return e.id === el.id ? {
-          ...e,
-          ...patch,
-          version: ((_a2 = e.version) != null ? _a2 : 1) + 1,
-          versionNonce: Math.random() * 2 ** 31 | 0,
-          updated: Date.now()
-        } : e;
-      }
-    );
-    api.updateScene({ elements: next, commitToHistory: true });
   }
   duplicateElement(el) {
     var _a, _b, _c, _d, _e, _f, _g;
