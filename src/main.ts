@@ -8,7 +8,6 @@ import {
   insertShape,
   insertSticker,
   insertText,
-  startArrowFromObject,
 } from "./inserters";
 import { ConnectorController, contains, nearEdge } from "./connector";
 
@@ -67,6 +66,8 @@ export default class StylusMenuPlugin extends Plugin {
   private lastMoveSig = "";
   /** Внутренний буфер копирования: глубокие копии скопированных элементов сцены. */
   private clipboard: any[] | null = null;
+  /** Ожидание второго тапа для стрелки: исходный объект (тап по цели создаёт стрелку). */
+  private pendingArrowFrom: any | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -321,6 +322,7 @@ export default class StylusMenuPlugin extends Plugin {
     const api = getApi(this.app);
     if (!ea || !api?.getSceneElements) {
       this.clearSnapshot();
+      this.pendingArrowFrom = null;
       return;
     }
     const { x: sx, y: sy } = this.toScene(api, ctx.clientX, ctx.clientY);
@@ -329,6 +331,17 @@ export default class StylusMenuPlugin extends Plugin {
     );
     let hit: any = null;
     for (const el of els) if (contains(sx, sy, el, 0)) hit = el; // последний в массиве = верхний
+
+    // Второй тап для стрелки: соединяем исходный объект с тем, по которому тапнули.
+    if (this.pendingArrowFrom) {
+      const from = this.pendingArrowFrom;
+      this.pendingArrowFrom = null;
+      this.scheduleCleanup();
+      if (hit && hit.id !== from.id) this.connectArrow(from, hit);
+      else new Notice("Стрелка отменена.");
+      return;
+    }
+
     if (!hit) {
       this.clearSnapshot(); // по пустому месту — оставляем поведение Excalidraw
       return;
@@ -338,16 +351,101 @@ export default class StylusMenuPlugin extends Plugin {
   }
 
   private openObjectMenu(ctx: TriggerCtx, ea: any, el: any): void {
+    const isLinear = el.type === "arrow" || el.type === "line";
+    const items: MenuItem[] = isLinear
+      ? this.arrowMenuItems(ea, el)
+      : this.shapeMenuItems(ea, el);
+    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+  }
+
+  /** Меню для фигуры (прямоугольник/эллипс/текст/картинка/заметка). */
+  private shapeMenuItems(ea: any, el: any): MenuItem[] {
     const cx = (el.x ?? 0) + (el.width ?? 0) / 2;
     const cy = (el.y ?? 0) + (el.height ?? 0) / 2;
-    const items: MenuItem[] = [
+    return [
       { label: "✎  Добавить текст", onClick: () => addTextToObject(ea, this.app, el) },
-      { label: "→  Стрелка от объекта", onClick: () => startArrowFromObject(ea, el, this.settings) },
+      {
+        label: "→  Стрелка к объекту…",
+        onClick: () => {
+          this.pendingArrowFrom = el;
+          new Notice("Тапните объект, к которому вести стрелку.");
+        },
+      },
       { label: "▢  Стикер на объект", onClick: () => insertSticker(ea, this.app, cx, cy) },
       { label: "⧉  Дублировать", onClick: () => this.duplicateElement(el) },
       { label: "🗑  Удалить", onClick: () => this.deleteElement(el) },
     ];
-    new InsertMenu({ x: ctx.clientX, y: ctx.clientY }, items).open();
+  }
+
+  /** Меню для стрелки/линии. */
+  private arrowMenuItems(ea: any, el: any): MenuItem[] {
+    return [
+      { label: "✎  Добавить текст", onClick: () => addTextToObject(ea, this.app, el) },
+      {
+        label: "↣  Наконечники ›",
+        children: [
+          { label: "→  Стрелка в конце", onClick: () => this.updateElement(el, { startArrowhead: null, endArrowhead: "arrow" }) },
+          { label: "←→  С обеих сторон", onClick: () => this.updateElement(el, { startArrowhead: "arrow", endArrowhead: "arrow" }) },
+          { label: "←  Стрелка в начале", onClick: () => this.updateElement(el, { startArrowhead: "arrow", endArrowhead: null }) },
+          { label: "●→  Точка + стрелка", onClick: () => this.updateElement(el, { startArrowhead: "dot", endArrowhead: "arrow" }) },
+          { label: "—  Без наконечников", onClick: () => this.updateElement(el, { startArrowhead: null, endArrowhead: null }) },
+        ],
+      },
+      {
+        label: "╱  Формат линии ›",
+        children: [
+          { label: "──  Сплошная", onClick: () => this.updateElement(el, { strokeStyle: "solid" }) },
+          { label: "- -  Пунктир", onClick: () => this.updateElement(el, { strokeStyle: "dashed" }) },
+          { label: "···  Точки", onClick: () => this.updateElement(el, { strokeStyle: "dotted" }) },
+          { label: "➕  Толще", onClick: () => this.updateElement(el, { strokeWidth: Math.min((el.strokeWidth ?? 1) + 1, 4) }) },
+          { label: "➖  Тоньше", onClick: () => this.updateElement(el, { strokeWidth: Math.max((el.strokeWidth ?? 1) - 1, 0.5) }) },
+        ],
+      },
+      { label: "⧉  Дублировать", onClick: () => this.duplicateElement(el) },
+      { label: "🗑  Удалить", onClick: () => this.deleteElement(el) },
+    ];
+  }
+
+  /** Стрелка между двумя существующими объектами (с привязкой обоих концов). */
+  private async connectArrow(from: any, to: any): Promise<void> {
+    const linear = ["arrow", "line", "freedraw"];
+    if (linear.includes(from.type) || linear.includes(to.type)) {
+      new Notice("Соединять стрелкой можно только фигуры.");
+      return;
+    }
+    const ea = getEA(this.app);
+    if (!ea) return;
+    try {
+      ea.reset();
+      ea.setView("active");
+      // connectObjects читает объекты из EA — заносим их из вью.
+      await ea.copyViewElementsToEAforEditing?.([from, to]);
+      ea.connectObjects(from.id, null, to.id, null, { endArrowHead: "arrow" });
+      await ea.addElementsToView(false, true, true);
+      new Notice("Стрелка создана.");
+    } catch (err) {
+      console.error("[excalidraw-stylus-menu] connectArrow failed", err);
+      new Notice("Не удалось создать стрелку.");
+    }
+  }
+
+  /** Обновить свойства одного элемента (наконечники, стиль/толщина линии). */
+  private updateElement(el: any, patch: Record<string, any>): void {
+    const api = getApi(this.app);
+    if (!api?.updateScene) return;
+    const cur = (api.getSceneElements?.() ?? []).filter((e: any) => e && !e.isDeleted);
+    const next = cur.map((e: any) =>
+      e.id === el.id
+        ? {
+            ...e,
+            ...patch,
+            version: (e.version ?? 1) + 1,
+            versionNonce: (Math.random() * 2 ** 31) | 0,
+            updated: Date.now(),
+          }
+        : e,
+    );
+    api.updateScene({ elements: next, commitToHistory: true });
   }
 
   private duplicateElement(el: any): void {

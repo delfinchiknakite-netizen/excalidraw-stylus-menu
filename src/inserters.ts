@@ -14,13 +14,30 @@ async function commit(ea: any): Promise<void> {
   await ea.addElementsToView(false, true, true);
 }
 
+/**
+ * Коммит + выделение созданного элемента по id. На проверяемом устройстве только что
+ * добавленный через EA элемент иногда тут же исчезал; выделение его «закрепляет»
+ * (так же ведёт себя штатная команда Excalidraw «Embed note»).
+ */
+async function commitSelect(ea: any, id: string | undefined): Promise<void> {
+  await ea.addElementsToView(false, true, true);
+  if (!id) return;
+  try {
+    const api = ea.getExcalidrawAPI?.();
+    const el = ea.getViewElements?.().find((e: any) => e.id === id);
+    if (api && el) api.selectElements([el]);
+  } catch {
+    /* ignore */
+  }
+}
+
 export async function insertText(ea: any, app: App, x: number, y: number): Promise<void> {
   const text = await promptText(app, "Текст");
   if (text == null) return;
   ea.reset();
   ea.setView("active");
-  ea.addText(x, y, text, { autoResize: true });
-  await commit(ea);
+  const id = ea.addText(x, y, text, { autoResize: true });
+  await commitSelect(ea, id);
 }
 
 export async function insertSticker(ea: any, app: App, x: number, y: number): Promise<void> {
@@ -28,12 +45,12 @@ export async function insertSticker(ea: any, app: App, x: number, y: number): Pr
   if (text == null) return;
   ea.reset();
   ea.setView("active");
-  ea.addText(x, y, text.trim() === "" ? " " : text, {
+  const id = ea.addText(x, y, text.trim() === "" ? " " : text, {
     box: "box",
     textAlign: "center",
     boxPadding: 12,
   });
-  await commit(ea);
+  await commitSelect(ea, id);
 }
 
 export type ShapeKind = "rect" | "ellipse" | "arrow" | "line";
@@ -49,21 +66,22 @@ export async function insertShape(
   ea.setView("active");
   const w = s.defaultRectW;
   const h = s.defaultRectH;
+  let id: string | undefined;
   switch (kind) {
     case "rect":
-      ea.addRect(x, y, w, h);
+      id = ea.addRect(x, y, w, h);
       break;
     case "ellipse":
-      ea.addEllipse(x, y, w, h);
+      id = ea.addEllipse(x, y, w, h);
       break;
     case "arrow":
-      ea.addArrow([[x, y], [x + w, y]], { endArrowHead: "arrow" });
+      id = ea.addArrow([[x, y], [x + w, y]], { endArrowHead: "arrow" });
       break;
     case "line":
-      ea.addLine([[x, y], [x + w, y]]);
+      id = ea.addLine([[x, y], [x + w, y]]);
       break;
   }
-  await commit(ea);
+  await commitSelect(ea, id);
 }
 
 export async function insertEmbedOrImage(
@@ -101,27 +119,16 @@ export async function insertEmbedOrImage(
 
 /* ---------- действия над объектом (тап пером по объекту) ---------- */
 
-/** Добавить текст, отцентрованный на объекте. */
+/** Добавить текст примерно по центру объекта (или у середины стрелки/линии). */
 export async function addTextToObject(ea: any, app: App, el: any): Promise<void> {
-  const text = await promptText(app, "Текст на объекте");
+  const text = await promptText(app, "Текст");
   if (text == null) return;
   ea.reset();
   ea.setView("active");
-  const w = el.width || 0;
-  const topY = (el.y ?? 0) + (el.height ?? 0) / 2 - 12;
-  ea.addText(el.x ?? 0, topY, text, w ? { width: w, textAlign: "center" } : {});
-  await commit(ea);
-}
-
-/** Нарисовать стрелку, стартующую от правого края объекта наружу. */
-export async function startArrowFromObject(ea: any, el: any, s: StylusMenuSettings): Promise<void> {
-  ea.reset();
-  ea.setView("active");
-  const sx = (el.x ?? 0) + (el.width ?? 0);
-  const sy = (el.y ?? 0) + (el.height ?? 0) / 2;
-  const ex = sx + s.defaultRectW;
-  ea.addArrow([[sx, sy], [ex, sy]], { endArrowHead: "arrow" });
-  await commit(ea);
+  const cx = (el.x ?? 0) + (el.width ?? 0) / 2 - 40;
+  const cy = (el.y ?? 0) + (el.height ?? 0) / 2 - 12;
+  const id = ea.addText(cx, cy, text, { autoResize: true });
+  await commitSelect(ea, id);
 }
 
 /* ---------- модальные окна ---------- */
