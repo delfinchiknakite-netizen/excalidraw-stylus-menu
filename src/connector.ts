@@ -1,25 +1,20 @@
 import { Notice } from "obsidian";
 import { StylusMenuSettings } from "./settings";
+import { ExcalidrawApi, ExcalidrawAutomate, ExElement } from "./excalidraw";
 
-interface El {
-  id: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+type Box = Pick<ExElement, "id" | "x" | "y" | "width" | "height">;
 
 export interface ConnectorInput {
-  ea: any;
-  api: any;
+  ea: ExcalidrawAutomate;
+  api: ExcalidrawApi;
   sceneX: number;
   sceneY: number;
-  elements: El[];
+  elements: ExElement[];
   settings: StylusMenuSettings;
 }
 
 /** Точка в зоне ±margin от рамки блока (рядом с границей, снаружи или внутри). */
-export function nearEdge(px: number, py: number, el: El, margin: number): boolean {
+export function nearEdge(px: number, py: number, el: Box, margin: number): boolean {
   const inOuter =
     px >= el.x - margin &&
     px <= el.x + el.width + margin &&
@@ -34,7 +29,7 @@ export function nearEdge(px: number, py: number, el: El, margin: number): boolea
 }
 
 /** Точка внутри блока (с небольшим допуском). */
-export function contains(px: number, py: number, el: El, margin: number): boolean {
+export function contains(px: number, py: number, el: Box, margin: number): boolean {
   return (
     px >= el.x - margin &&
     px <= el.x + el.width + margin &&
@@ -81,7 +76,7 @@ export class ConnectorController {
     this.sourceId = null;
   }
 
-  private async drawArrow(ea: any, a: El, b: El): Promise<void> {
+  private async drawArrow(ea: ExcalidrawAutomate, a: ExElement, b: ExElement): Promise<void> {
     try {
       ea.reset();
       ea.setView("active");

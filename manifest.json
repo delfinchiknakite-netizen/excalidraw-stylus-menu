@@ -1,7 +1,7 @@
 {
   "id": "excalidraw-stylus-menu",
   "name": "Excalidraw Stylus Menu",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "minAppVersion": "1.4.0",
   "description": "Stylus/S Pen gestures for Excalidraw: open an insert menu by tap or side button, tap objects for quick actions, and copy, paste or connect shapes.",
   "author": "avtarasov210",

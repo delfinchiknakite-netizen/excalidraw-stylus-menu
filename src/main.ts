@@ -4,30 +4,22 @@ import { PointerWatcher, TriggerCtx } from "./PointerWatcher";
 import { InsertMenu, MenuItem } from "./InsertMenu";
 import { insertEmbedOrImage, insertShape, insertSticker, insertText } from "./inserters";
 import { ConnectorController, contains } from "./connector";
+import {
+  ExAppState,
+  ExBinding,
+  ExcalidrawApi,
+  ExcalidrawAutomate,
+  ExElement,
+  getApi,
+  getEA,
+  hasBBox,
+  zoomValue,
+} from "./excalidraw";
 
 const EXCALIDRAW_VIEW = "excalidraw";
 const STRAY_TYPES = ["freedraw", "draw", "line", "arrow"];
 const STRAY_MAX_PX = 12;
-
-/** Доступ к ExcalidrawAutomate из плагина Excalidraw. */
-export function getEA(app: App): any | null {
-  const w = window as any;
-  return (
-    w.ExcalidrawAutomate ??
-    (app as any).plugins?.plugins?.["obsidian-excalidraw-plugin"]?.ea ??
-    null
-  );
-}
-
-function getApi(app: App): any | null {
-  const ea = getEA(app);
-  if (!ea) return null;
-  try {
-    return ea.getExcalidrawAPI();
-  } catch {
-    return null;
-  }
-}
+const LINEAR_TYPES = ["arrow", "line", "freedraw"];
 
 /** Случайный id в стиле Excalidraw (nanoid-подобный) для вставляемых клонов. */
 function genId(): string {
@@ -37,14 +29,8 @@ function genId(): string {
   return s;
 }
 
-function hasBBox(el: any): boolean {
-  return (
-    el &&
-    typeof el.x === "number" &&
-    typeof el.y === "number" &&
-    typeof el.width === "number" &&
-    typeof el.height === "number"
-  );
+function randInt(): number {
+  return (Math.random() * 2 ** 31) | 0;
 }
 
 export default class StylusMenuPlugin extends Plugin {
@@ -53,15 +39,15 @@ export default class StylusMenuPlugin extends Plugin {
   private debugEl: HTMLElement | null = null;
   private connector = new ConnectorController();
   private snapshot: Set<string> | null = null;
-  private snapApi: any = null;
+  private snapApi: ExcalidrawApi | null = null;
   private lastPointer: { clientX: number; clientY: number } | null = null;
-  private diagHandlers: Array<[string, (e: any) => void]> | null = null;
+  private diagHandlers: Array<[string, EventListener]> | null = null;
   private diagLines: string[] = [];
   private lastMoveSig = "";
   /** Внутренний буфер копирования: глубокие копии скопированных элементов сцены. */
-  private clipboard: any[] | null = null;
+  private clipboard: ExElement[] | null = null;
   /** Ожидание второго тапа для стрелки: исходный объект (тап по цели создаёт стрелку). */
-  private pendingArrowFrom: any | null = null;
+  private pendingArrowFrom: ExElement | null = null;
   /** Единственное открытое меню (синглтон — чтобы меню не стекировались). */
   private activeMenu: InsertMenu | null = null;
   /** До этого времени (ms) новое меню не открываем — гасим дребезг после закрытия. */
@@ -122,7 +108,7 @@ export default class StylusMenuPlugin extends Plugin {
   /** Навешивает PointerWatcher на все открытые вью Excalidraw, снимает с закрытых. */
   private syncWatchers(): void {
     for (const [el, w] of Array.from(this.watchers.entries())) {
-      if (!document.body.contains(el)) {
+      if (!activeDocument.body.contains(el)) {
         w.detach();
         this.watchers.delete(el);
         this.connector.reset();
@@ -130,8 +116,7 @@ export default class StylusMenuPlugin extends Plugin {
     }
     const leaves = this.app.workspace.getLeavesOfType(EXCALIDRAW_VIEW);
     for (const leaf of leaves) {
-      const view: any = leaf.view;
-      const el: HTMLElement | undefined = view?.contentEl;
+      const el = (leaf.view as unknown as { contentEl?: HTMLElement }).contentEl;
       if (!el || this.watchers.has(el)) continue;
       const watcher = new PointerWatcher(
         el,
@@ -153,9 +138,9 @@ export default class StylusMenuPlugin extends Plugin {
 
   /* ---------- координаты ---------- */
 
-  private toScene(api: any, clientX: number, clientY: number): { x: number; y: number } {
-    const st = api.getAppState?.() ?? {};
-    const zoom = st?.zoom?.value ?? st?.zoom ?? 1;
+  private toScene(api: ExcalidrawApi, clientX: number, clientY: number): { x: number; y: number } {
+    const st: ExAppState = api.getAppState?.() ?? {};
+    const zoom = zoomValue(st);
     return {
       x: (clientX - (st.offsetLeft ?? 0)) / zoom - (st.scrollX ?? 0),
       y: (clientY - (st.offsetTop ?? 0)) / zoom - (st.scrollY ?? 0),
@@ -170,7 +155,7 @@ export default class StylusMenuPlugin extends Plugin {
     if (!api) return;
     try {
       const els = api.getSceneElements?.() ?? [];
-      this.snapshot = new Set(els.filter((e: any) => !e.isDeleted).map((e: any) => e.id));
+      this.snapshot = new Set(els.filter((e) => !e.isDeleted).map((e) => e.id));
       this.snapApi = api;
     } catch {
       this.clearSnapshot();
@@ -191,16 +176,16 @@ export default class StylusMenuPlugin extends Plugin {
       try {
         const cur = api.getSceneElements?.() ?? [];
         const strays = cur.filter(
-          (e: any) =>
+          (e) =>
             !e.isDeleted &&
             !snap.has(e.id) &&
             STRAY_TYPES.includes(e.type) &&
             Math.max(e.width || 0, e.height || 0) < STRAY_MAX_PX,
         );
         if (strays.length) {
-          const ids = new Set(strays.map((e: any) => e.id));
-          api.updateScene({
-            elements: cur.filter((e: any) => !ids.has(e.id)),
+          const ids = new Set(strays.map((e) => e.id));
+          api.updateScene?.({
+            elements: cur.filter((e) => !ids.has(e.id)),
             commitToHistory: false,
           });
         }
@@ -233,9 +218,7 @@ export default class StylusMenuPlugin extends Plugin {
     }
 
     const { x: sceneX, y: sceneY } = this.toScene(api, ctx.clientX, ctx.clientY);
-    const elements = (api.getSceneElements?.() ?? []).filter(
-      (el: any) => el && !el.isDeleted && hasBBox(el),
-    );
+    const elements = (api.getSceneElements?.() ?? []).filter((el) => !el.isDeleted && hasBBox(el));
 
     const handled = this.connector.handleTrigger({
       ea,
@@ -298,7 +281,7 @@ export default class StylusMenuPlugin extends Plugin {
     });
   }
 
-  private openInsertMenu(ctx: TriggerCtx, ea: any, x: number, y: number): void {
+  private openInsertMenu(ctx: TriggerCtx, ea: ExcalidrawAutomate, x: number, y: number): void {
     const items: MenuItem[] = [
       { label: "✎  Текст", onClick: () => insertText(ea, this.app, x, y) },
       { label: "▢  Стикер (текст в рамке)", onClick: () => insertSticker(ea, this.app, x, y) },
@@ -334,16 +317,13 @@ export default class StylusMenuPlugin extends Plugin {
       return;
     }
     const { x: sx, y: sy } = this.toScene(api, ctx.clientX, ctx.clientY);
-    const all = (api.getSceneElements() ?? []).filter(
-      (el: any) => el && !el.isDeleted && hasBBox(el),
-    );
+    const all = (api.getSceneElements() ?? []).filter((el) => !el.isDeleted && hasBBox(el));
 
     // Одиночный хит для меню фигуры / цели стрелки. Стрелки/линии/росчерки исключаем:
     // у них огромный bbox по диагонали, из-за чего тап по пустому месту рядом попадал «в стрелку».
-    const LINEAR = ["arrow", "line", "freedraw"];
-    let hit: any = null;
+    let hit: ExElement | null = null;
     for (const el of all) {
-      if (LINEAR.includes(el.type)) continue;
+      if (LINEAR_TYPES.includes(el.type)) continue;
       if (contains(sx, sy, el, 0)) hit = el; // последний = верхний
     }
 
@@ -352,7 +332,7 @@ export default class StylusMenuPlugin extends Plugin {
       const from = this.pendingArrowFrom;
       this.pendingArrowFrom = null;
       this.scheduleCleanup();
-      if (hit && hit.id !== from.id) this.connectArrow(from, hit);
+      if (hit && hit.id !== from.id) void this.connectArrow(from, hit);
       else new Notice("Стрелка отменена.");
       return;
     }
@@ -360,11 +340,12 @@ export default class StylusMenuPlugin extends Plugin {
     if (this.settings.objectTapMenu) {
       // Тап по МНОЖЕСТВЕННОМУ выделению → меню действий над набором (дублировать/удалить).
       // Требуем >1 элемента и попадание по выделенной ФИГУРЕ (не по bbox стрелки — он огромный).
-      const selIds = (api.getAppState?.() ?? {}).selectedElementIds ?? {};
-      const selected = all.filter((el: any) => selIds[el.id]);
+      const appState: ExAppState = api.getAppState?.() ?? {};
+      const selIds = appState.selectedElementIds ?? {};
+      const selected = all.filter((el) => selIds[el.id]);
       if (
         selected.length > 1 &&
-        selected.some((el: any) => !LINEAR.includes(el.type) && contains(sx, sy, el, 0))
+        selected.some((el) => !LINEAR_TYPES.includes(el.type) && contains(sx, sy, el, 0))
       ) {
         this.scheduleCleanup();
         this.openSelectionMenu(ctx, selected);
@@ -383,15 +364,15 @@ export default class StylusMenuPlugin extends Plugin {
     this.openInsertMenu(ctx, ea, sx, sy);
   }
 
-  private openObjectMenu(ctx: TriggerCtx, ea: any, el: any): void {
+  private openObjectMenu(ctx: TriggerCtx, ea: ExcalidrawAutomate, el: ExElement): void {
     // Меню только для фигур (стрелки/линии в хит-тест не попадают).
     this.presentMenu(ctx, this.shapeMenuItems(ea, el));
   }
 
   /** Меню для фигуры (прямоугольник/эллипс/текст/картинка/заметка). */
-  private shapeMenuItems(ea: any, el: any): MenuItem[] {
-    const cx = (el.x ?? 0) + (el.width ?? 0) / 2;
-    const cy = (el.y ?? 0) + (el.height ?? 0) / 2;
+  private shapeMenuItems(ea: ExcalidrawAutomate, el: ExElement): MenuItem[] {
+    const cx = el.x + el.width / 2;
+    const cy = el.y + el.height / 2;
     return [
       {
         label: "→  Стрелка к объекту…",
@@ -407,7 +388,7 @@ export default class StylusMenuPlugin extends Plugin {
   }
 
   /** Меню для выделения: тап по выделенным объектам → дублировать/удалить весь набор. */
-  private openSelectionMenu(ctx: TriggerCtx, els: any[]): void {
+  private openSelectionMenu(ctx: TriggerCtx, els: ExElement[]): void {
     const items: MenuItem[] = [
       { label: `⧉  Дублировать (${els.length})`, onClick: () => this.duplicateElements(els) },
       { label: `🗑  Удалить (${els.length})`, onClick: () => this.deleteElements(els) },
@@ -416,9 +397,8 @@ export default class StylusMenuPlugin extends Plugin {
   }
 
   /** Стрелка между двумя существующими объектами (с привязкой обоих концов). */
-  private async connectArrow(from: any, to: any): Promise<void> {
-    const linear = ["arrow", "line", "freedraw"];
-    if (linear.includes(from.type) || linear.includes(to.type)) {
+  private async connectArrow(from: ExElement, to: ExElement): Promise<void> {
+    if (LINEAR_TYPES.includes(from.type) || LINEAR_TYPES.includes(to.type)) {
       new Notice("Соединять стрелкой можно только фигуры.");
       return;
     }
@@ -428,7 +408,7 @@ export default class StylusMenuPlugin extends Plugin {
       ea.reset();
       ea.setView("active");
       // connectObjects читает объекты из EA — заносим их из вью.
-      await ea.copyViewElementsToEAforEditing?.([from, to]);
+      ea.copyViewElementsToEAforEditing?.([from, to]);
       ea.connectObjects(from.id, null, to.id, null, { endArrowHead: "arrow" });
       await ea.addElementsToView(false, true, true);
       new Notice("Стрелка создана.");
@@ -442,58 +422,60 @@ export default class StylusMenuPlugin extends Plugin {
    * Клонировать набор элементов с новыми id, перенастроив связи (группы, привязки,
    * контейнеры) ВНУТРИ набора, и сместить на (dx, dy). Используется вставкой и дублированием.
    */
-  private cloneElements(list: any[], dx: number, dy: number): any[] {
+  private cloneElements(list: ExElement[], dx: number, dy: number): ExElement[] {
     const idMap = new Map<string, string>();
     const groupMap = new Map<string, string>();
     for (const el of list) idMap.set(el.id, genId());
     const remap = (id: string) => idMap.get(id) ?? id;
-    return list.map((src: any) => {
-      const el = JSON.parse(JSON.stringify(src));
-      el.id = idMap.get(src.id);
-      el.x = (src.x ?? 0) + dx;
-      el.y = (src.y ?? 0) + dy;
-      el.seed = (Math.random() * 2 ** 31) | 0;
-      el.versionNonce = (Math.random() * 2 ** 31) | 0;
+    const remapBinding = (b: ExBinding | null | undefined): ExBinding | null => {
+      if (!b?.elementId) return b ?? null;
+      return idMap.has(b.elementId) ? { ...b, elementId: remap(b.elementId) } : null;
+    };
+    return list.map((src) => {
+      const el = JSON.parse(JSON.stringify(src)) as ExElement;
+      el.id = idMap.get(src.id) ?? genId();
+      el.x = src.x + dx;
+      el.y = src.y + dy;
+      el.seed = randInt();
+      el.versionNonce = randInt();
       el.version = (src.version ?? 1) + 1;
       el.updated = Date.now();
       if (Array.isArray(el.groupIds)) {
-        el.groupIds = el.groupIds.map((g: string) => {
-          if (!groupMap.has(g)) groupMap.set(g, genId());
-          return groupMap.get(g);
+        el.groupIds = el.groupIds.map((g) => {
+          const mapped = groupMap.get(g) ?? genId();
+          if (!groupMap.has(g)) groupMap.set(g, mapped);
+          return mapped;
         });
       }
       if (el.containerId) el.containerId = idMap.has(el.containerId) ? remap(el.containerId) : null;
       if (Array.isArray(el.boundElements)) {
         el.boundElements = el.boundElements
-          .filter((b: any) => b && idMap.has(b.id))
-          .map((b: any) => ({ ...b, id: remap(b.id) }));
+          .filter((b) => idMap.has(b.id))
+          .map((b) => ({ ...b, id: remap(b.id) }));
       }
-      for (const k of ["startBinding", "endBinding"] as const) {
-        if (el[k]?.elementId) {
-          if (idMap.has(el[k].elementId)) el[k] = { ...el[k], elementId: remap(el[k].elementId) };
-          else el[k] = null;
-        }
-      }
+      el.startBinding = remapBinding(el.startBinding);
+      el.endBinding = remapBinding(el.endBinding);
       return el;
     });
   }
 
-  private duplicateElements(els: any[]): void {
+  private duplicateElements(els: ExElement[]): void {
     const api = getApi(this.app);
     if (!api?.updateScene || !els.length) return;
     const clones = this.cloneElements(els, 20, 20);
-    const cur = (api.getSceneElements?.() ?? []).filter((e: any) => e && !e.isDeleted);
-    const sel: Record<string, true> = {};
+    const cur = (api.getSceneElements?.() ?? []).filter((e) => !e.isDeleted);
+    const sel: Record<string, boolean> = {};
     for (const c of clones) sel[c.id] = true;
+    const appState: ExAppState = api.getAppState?.() ?? {};
     api.updateScene({
       elements: [...cur, ...clones],
-      appState: { ...(api.getAppState?.() ?? {}), selectedElementIds: sel },
+      appState: { ...appState, selectedElementIds: sel },
       commitToHistory: true,
     });
     new Notice(`Дублировано: ${clones.length}`);
   }
 
-  private deleteElements(els: any[]): void {
+  private deleteElements(els: ExElement[]): void {
     const api = getApi(this.app);
     if (!api?.updateScene || !els.length) return;
     const ids = new Set<string>();
@@ -501,12 +483,11 @@ export default class StylusMenuPlugin extends Plugin {
       ids.add(el.id);
       for (const b of el.boundElements ?? []) ids.add(b.id);
     }
-    const cur = (api.getSceneElements?.() ?? []).filter((e: any) => e && !e.isDeleted);
+    const cur = (api.getSceneElements?.() ?? []).filter((e) => !e.isDeleted);
+    const appState: ExAppState = api.getAppState?.() ?? {};
     api.updateScene({
-      elements: cur.filter(
-        (e: any) => !ids.has(e.id) && !(e.containerId && ids.has(e.containerId)),
-      ),
-      appState: { ...(api.getAppState?.() ?? {}), selectedElementIds: {} },
+      elements: cur.filter((e) => !ids.has(e.id) && !(e.containerId && ids.has(e.containerId))),
+      appState: { ...appState, selectedElementIds: {} },
       commitToHistory: true,
     });
     new Notice(`Удалено: ${els.length}`);
@@ -521,29 +502,28 @@ export default class StylusMenuPlugin extends Plugin {
       new Notice("Активный холст Excalidraw не найден.");
       return;
     }
-    const st = api.getAppState?.() ?? {};
-    const sel = st.selectedElementIds ?? {};
-    const selected = (api.getSceneElements() ?? []).filter(
-      (el: any) => el && !el.isDeleted && sel[el.id],
-    );
+    const appState: ExAppState = api.getAppState?.() ?? {};
+    const sel = appState.selectedElementIds ?? {};
+    const selected = (api.getSceneElements() ?? []).filter((el) => !el.isDeleted && sel[el.id]);
     if (!selected.length) {
       new Notice("Нечего копировать — выделите элементы.");
       return;
     }
     // Глубокая копия, чтобы последующие правки сцены не меняли буфер.
-    this.clipboard = selected.map((el: any) => JSON.parse(JSON.stringify(el)));
+    this.clipboard = selected.map((el) => JSON.parse(JSON.stringify(el)) as ExElement);
     new Notice(`Скопировано: ${this.clipboard.length}`);
   }
 
   /** Удержание/команда: вставить буфер у кончика пера с новыми id и выделить вставленное. */
   private pasteClipboard(ctx: TriggerCtx): void {
-    if (!this.clipboard?.length) {
+    const buffer = this.clipboard;
+    if (!buffer?.length) {
       new Notice("Буфер пуст — сначала скопируйте (двойной тап кнопкой).");
       return;
     }
     const ea = getEA(this.app);
     try {
-      ea?.setView?.("active");
+      ea?.setView("active");
     } catch {
       /* ignore */
     }
@@ -554,18 +534,19 @@ export default class StylusMenuPlugin extends Plugin {
     }
 
     // Смещаем набор так, чтобы его левый-верхний угол оказался у кончика пера.
-    const minX = Math.min(...this.clipboard.map((e: any) => e.x ?? 0));
-    const minY = Math.min(...this.clipboard.map((e: any) => e.y ?? 0));
+    const minX = Math.min(...buffer.map((e) => e.x));
+    const minY = Math.min(...buffer.map((e) => e.y));
     const { x: penX, y: penY } = this.toScene(api, ctx.clientX, ctx.clientY);
-    const clones = this.cloneElements(this.clipboard, penX - minX, penY - minY);
+    const clones = this.cloneElements(buffer, penX - minX, penY - minY);
 
-    const current = (api.getSceneElements?.() ?? []).filter((e: any) => e && !e.isDeleted);
-    const selectedElementIds: Record<string, true> = {};
+    const current = (api.getSceneElements?.() ?? []).filter((e) => !e.isDeleted);
+    const selectedElementIds: Record<string, boolean> = {};
     for (const c of clones) selectedElementIds[c.id] = true;
+    const appState: ExAppState = api.getAppState?.() ?? {};
     try {
       api.updateScene({
         elements: [...current, ...clones],
-        appState: { ...(api.getAppState?.() ?? {}), selectedElementIds },
+        appState: { ...appState, selectedElementIds },
         commitToHistory: true,
       });
       new Notice(`Вставлено: ${clones.length}`);
@@ -589,7 +570,7 @@ export default class StylusMenuPlugin extends Plugin {
 
   private ensureDebugOverlay(): void {
     if (this.debugEl) return;
-    this.debugEl = document.body.createDiv({ cls: "esm-debug" });
+    this.debugEl = activeDocument.body.createDiv({ cls: "esm-debug" });
     this.debugEl.setText("S Pen debug: жмите кнопку пера в разных режимах…");
   }
 
@@ -613,25 +594,37 @@ export default class StylusMenuPlugin extends Plugin {
   private installDiagnostics(): void {
     if (this.diagHandlers) return;
     this.diagHandlers = [];
+    const handlers = this.diagHandlers;
     this.lastMoveSig = "";
 
-    const move = (e: PointerEvent) => {
+    const move = (ev: Event) => {
+      const e = ev as PointerEvent;
       if (e.pointerType !== "pen" && e.pointerType !== "mouse") return;
       const sig = `${e.pointerType}:${e.buttons}`;
       if (sig === this.lastMoveSig) return; // только при смене состояния кнопок
       this.lastMoveSig = sig;
       this.logLine(`hover ${e.pointerType} b=${e.buttons}`);
     };
-    const up = (e: PointerEvent) =>
+    const up = (ev: Event) => {
+      const e = ev as PointerEvent;
       this.logLine(`up    ${e.pointerType} b=${e.buttons} btn=${e.button}`);
-    const ctx = (e: any) =>
+    };
+    const ctx = (ev: Event) => {
+      const e = ev as PointerEvent;
       this.logLine(`contextmenu type=${e.pointerType ?? "?"} btn=${e.button ?? "?"}`);
-    const aux = (e: any) => this.logLine(`auxclick btn=${e.button} type=${e.pointerType ?? "?"}`);
-    const key = (e: KeyboardEvent) => this.logLine(`keydown "${e.key}" code=${e.code}`);
+    };
+    const aux = (ev: Event) => {
+      const e = ev as PointerEvent;
+      this.logLine(`auxclick btn=${e.button} type=${e.pointerType ?? "?"}`);
+    };
+    const key = (ev: Event) => {
+      const e = ev as KeyboardEvent;
+      this.logLine(`keydown "${e.key}" code=${e.code}`);
+    };
 
-    const reg = (name: string, fn: (e: any) => void) => {
+    const reg = (name: string, fn: EventListener) => {
       window.addEventListener(name, fn, true);
-      this.diagHandlers!.push([name, fn]);
+      handlers.push([name, fn]);
     };
     reg("pointermove", move);
     reg("pointerup", up);
@@ -647,7 +640,7 @@ export default class StylusMenuPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()) as StylusMenuSettings;
     this.settings.trigger = "penbutton"; // единственный режим (старые значения игнорируем)
   }
 
@@ -699,7 +692,7 @@ class StylusMenuSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Меню действий по тапу на объект")
-      .setDesc("Тап пером по фигуре/объекту → меню: добавить текст, стрелка от объекта, стикер, дублировать, удалить.")
+      .setDesc("Тап пером по фигуре/объекту → меню: стрелка к объекту, стикер, дублировать, удалить.")
       .addToggle((t) =>
         t.setValue(this.plugin.settings.objectTapMenu).onChange(async (v) => {
           this.plugin.settings.objectTapMenu = v;
@@ -724,14 +717,14 @@ class StylusMenuSettingTab extends PluginSettingTab {
       (n) => (this.plugin.settings.moveThresholdPx = n),
     );
     this.numberField(
-      "Долгое нажатие, мс",
-      "Для жеста «долгое нажатие пером».",
+      "Удержание кнопки (вставить), мс",
+      "Через сколько удержание боковой кнопки при парении вставляет буфер.",
       () => this.plugin.settings.longPressMs,
       (n) => (this.plugin.settings.longPressMs = n),
     );
     this.numberField(
-      "Окно двойного касания, мс",
-      "Для жеста «двойное касание пером».",
+      "Окно двойного тапа, мс",
+      "Окно распознавания двойного тапа кнопкой (копировать) и задержки одиночного тапа.",
       () => this.plugin.settings.doubleTapMs,
       (n) => (this.plugin.settings.doubleTapMs = n),
     );

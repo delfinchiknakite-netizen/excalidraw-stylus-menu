@@ -1,5 +1,24 @@
 # Excalidraw Stylus Menu (S Pen)
 
+Companion plugin for [Obsidian Excalidraw](https://github.com/zsviczian/obsidian-excalidraw-plugin)
+that makes drawing with a stylus (Samsung S Pen) faster.
+
+- **Open an insert menu** at the pen tip — by tapping empty canvas or by a single tap of the pen's
+  side button while hovering. Insert text, a sticker (boxed text), shapes (rectangle / ellipse /
+  arrow / line), or an embedded note / image.
+- **Tap an object** to get quick actions: draw an arrow to another object, add a sticker, duplicate
+  or delete. Tap a multi-selection to duplicate / delete the whole group.
+- **Side-button gestures while hovering:** double tap → copy the selection, hold → paste at the pen tip.
+
+It is a standalone plugin — it does not fork Excalidraw; it calls Excalidraw's public
+`window.ExcalidrawAutomate` API. Copy/paste and duplicate use that API directly (no system clipboard).
+The finger is never intercepted, so touch drawing and navigation keep working. Requires the Excalidraw
+plugin to be installed and enabled.
+
+Русское описание ниже. / Russian description follows.
+
+---
+
 Плагин-компаньон для [Obsidian Excalidraw](https://github.com/zsviczian/obsidian-excalidraw-plugin).
 Делает рисование пером (Samsung S Pen) удобнее:
 

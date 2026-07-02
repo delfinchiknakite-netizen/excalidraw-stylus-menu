@@ -20,7 +20,7 @@ export class InsertMenu {
 
   open(onClose?: () => void): void {
     this.onClose = onClose ?? null;
-    this.overlay = document.body.createDiv({ cls: "esm-overlay" });
+    this.overlay = activeDocument.body.createDiv({ cls: "esm-overlay" });
     this.overlay.addEventListener(
       "pointerdown",
       (e) => {
@@ -64,7 +64,7 @@ export class InsertMenu {
     for (const it of items) {
       const row = menu.createDiv({ cls: "esm-item" });
       row.setText(it.label);
-      row.addEventListener("pointerup", async (e) => {
+      row.addEventListener("pointerup", (e) => {
         e.stopPropagation();
         e.preventDefault();
         if (it.children) {
@@ -100,7 +100,8 @@ export class InsertMenu {
     if (y + rect.height > vh - 8) y = vh - rect.height - 8;
     if (x < 8) x = 8;
     if (y < 8) y = 8;
-    m.style.left = `${x}px`;
-    m.style.top = `${y}px`;
+    // Динамическая позиция — через CSS-переменные (не задаём стили из JS напрямую).
+    m.style.setProperty("--esm-x", `${x}px`);
+    m.style.setProperty("--esm-y", `${y}px`);
   }
 }

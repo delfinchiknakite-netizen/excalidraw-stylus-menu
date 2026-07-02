@@ -215,14 +215,14 @@ export class PointerWatcher {
 
   private clearHoldTimer(): void {
     if (this.holdTimer != null) {
-      clearTimeout(this.holdTimer);
+      window.clearTimeout(this.holdTimer);
       this.holdTimer = null;
     }
   }
 
   private clearTapTimer(): void {
     if (this.tapTimer != null) {
-      clearTimeout(this.tapTimer);
+      window.clearTimeout(this.tapTimer);
       this.tapTimer = null;
     }
   }

@@ -33,6 +33,8 @@
 ```
 src/
   main.ts           — плагин: onload, синхронизация watcher'ов, все действия и меню, настройки
+  excalidraw.ts     — ТИПЫ публичного API Excalidraw (ExElement/ExcalidrawApi/ExcalidrawAutomate)
+                      + getEA/getApi/hasBBox/zoomValue (чтобы не было `any` — для ревью каталога)
   PointerWatcher.ts — распознавание жестов пера на одном вью Excalidraw (автомат состояний)
   InsertMenu.ts     — простое всплывающее меню (список у кончика пера, поддерживает подменю)
   inserters.ts      — вставка через EA: текст, стикер, фигуры, заметка/изображение (+ модалки)
@@ -40,6 +42,10 @@ src/
   settings.ts       — интерфейс настроек и значения по умолчанию
 esbuild.config.mjs  — сборка в main.js
 ```
+
+Все обёртки над Excalidraw типизированы через `src/excalidraw.ts` (без `any`), DOM-доступ — через
+`activeDocument` (поддержка popout-окон), таймеры — `window.setTimeout/clearTimeout`. Это требования
+автоскана каталога («Scorecard»).
 
 ## Мост к Excalidraw (`main.ts`)
 

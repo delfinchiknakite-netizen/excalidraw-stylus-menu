@@ -1,5 +1,6 @@
 import { App, FuzzySuggestModal, Modal, TFile } from "obsidian";
 import { StylusMenuSettings } from "./settings";
+import { ExcalidrawAutomate } from "./excalidraw";
 
 const IMAGE_EXT = new Set([
   "png", "jpg", "jpeg", "gif", "svg", "webp", "bmp", "avif", "ico",
@@ -9,7 +10,7 @@ function isImage(f: TFile): boolean {
   return IMAGE_EXT.has((f.extension || "").toLowerCase());
 }
 
-async function commit(ea: any): Promise<void> {
+async function commit(ea: ExcalidrawAutomate): Promise<void> {
   // repositionToCursor=false (координаты уже точные), save=true, newElementsOnTop=true
   await ea.addElementsToView(false, true, true);
 }
@@ -19,12 +20,11 @@ async function commit(ea: any): Promise<void> {
  * добавленный через EA элемент иногда тут же исчезал; выделение его «закрепляет»
  * (так же ведёт себя штатная команда Excalidraw «Embed note»).
  */
-async function commitSelect(ea: any, id: string | undefined): Promise<void> {
+async function commitSelect(ea: ExcalidrawAutomate, id: string | undefined): Promise<void> {
   await ea.addElementsToView(false, true, true);
   if (!id) return;
   try {
-    const api = ea.getExcalidrawAPI?.();
-    if (!api) return;
+    const api = ea.getExcalidrawAPI();
     // Выделяем по id через appState — надёжнее, чем selectElements (не зависит от
     // того, успел ли элемент попасть в getViewElements к этому моменту).
     api.updateScene?.({
@@ -35,7 +35,12 @@ async function commitSelect(ea: any, id: string | undefined): Promise<void> {
   }
 }
 
-export async function insertText(ea: any, app: App, x: number, y: number): Promise<void> {
+export async function insertText(
+  ea: ExcalidrawAutomate,
+  app: App,
+  x: number,
+  y: number,
+): Promise<void> {
   const text = await promptText(app, "Текст");
   if (text == null) return;
   ea.reset();
@@ -44,7 +49,12 @@ export async function insertText(ea: any, app: App, x: number, y: number): Promi
   await commitSelect(ea, id);
 }
 
-export async function insertSticker(ea: any, app: App, x: number, y: number): Promise<void> {
+export async function insertSticker(
+  ea: ExcalidrawAutomate,
+  app: App,
+  x: number,
+  y: number,
+): Promise<void> {
   const text = await promptText(app, "Текст стикера");
   if (text == null) return;
   ea.reset();
@@ -60,7 +70,7 @@ export async function insertSticker(ea: any, app: App, x: number, y: number): Pr
 export type ShapeKind = "rect" | "ellipse" | "arrow" | "line";
 
 export async function insertShape(
-  ea: any,
+  ea: ExcalidrawAutomate,
   kind: ShapeKind,
   x: number,
   y: number,
@@ -89,7 +99,7 @@ export async function insertShape(
 }
 
 export async function insertEmbedOrImage(
-  ea: any,
+  ea: ExcalidrawAutomate,
   app: App,
   x: number,
   y: number,

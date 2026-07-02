@@ -7,6 +7,8 @@
 
 .esm-menu {
   position: fixed;
+  left: var(--esm-x, 0px);
+  top: var(--esm-y, 0px);
   min-width: 220px;
   max-width: 80vw;
   background: var(--background-secondary);
@@ -46,9 +48,10 @@
   position: fixed;
   bottom: 8px;
   left: 8px;
-  z-index: 9999;
-  background: rgba(0, 0, 0, 0.72);
-  color: #41ff6a;
+  z-index: var(--layer-modal, 100);
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  border: 1px solid var(--background-modifier-border);
   font: 12px/1.4 var(--font-monospace, monospace);
   padding: 6px 10px;
   border-radius: 6px;
