@@ -1,9 +1,10 @@
 {
   "id": "excalidraw-stylus-menu",
-  "name": "Excalidraw Stylus Menu (S Pen)",
+  "name": "Excalidraw Stylus Menu",
   "version": "1.0.0",
   "minAppVersion": "1.4.0",
-  "description": "Перо/S Pen: по жесту открывается меню вставки блоков; у края блока — рисование стрелки-коннектора. Компаньон плагина Excalidraw.",
+  "description": "Stylus/S Pen gestures for Excalidraw: open an insert menu by tap or side button, tap objects for quick actions, and copy, paste or connect shapes.",
   "author": "avtarasov210",
+  "authorUrl": "https://github.com/delfinchiknakite-netizen",
   "isDesktopOnly": false
 }
