@@ -1,7 +1,7 @@
 {
   "id": "excalidraw-stylus-menu",
   "name": "Excalidraw Stylus Menu (S Pen)",
-  "version": "0.7.0",
+  "version": "1.0.0",
   "minAppVersion": "1.4.0",
   "description": "Перо/S Pen: по жесту открывается меню вставки блоков; у края блока — рисование стрелки-коннектора. Компаньон плагина Excalidraw.",
   "author": "avtarasov210",
